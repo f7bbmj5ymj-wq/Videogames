@@ -5,7 +5,7 @@
 ## 🇨🇭 Alpenfestival (`rennspiel/`)
 
 Ein 3D-Open-World-Rennspiel in den Schweizer Alpen, inspiriert von Festival-Rennspielen wie Forza Horizon.
-Es nutzt [Three.js](https://threejs.org), das unter `lib/` mitgeliefert wird.
+Es nutzt [Three.js](https://threejs.org) und dessen physikalischen Himmel (`Sky.js`), beides unter `lib/` mitgeliefert. Alle Texturen werden beim Start per Code erzeugt.
 
 **Inhalt**
 - Offene Welt mit Bergsee, Alpwiesen, Wäldern, Chalets, Kühen und verschneiten Gipfeln (inkl. Matterhorn)
