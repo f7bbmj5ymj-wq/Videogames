@@ -1,0 +1,1616 @@
+"use strict";
+// Alpenfestival Schweiz – ein kleines Open-World-Rennspiel in den Schweizer Alpen.
+// Alles (Landschaft, Straßen, Bäume, Autos) wird per Code erzeugt – es gibt keine Bilddateien.
+//
+// Inhalt:
+//   1. Hilfsfunktionen & Spielstand
+//   2. Landschaft (Höhenfunktion)
+//   3. Straßen
+//   4. Szene, Licht, Himmel
+//   5. Welt-Objekte (Gelände, Wasser, Bäume, Häuser, Festival)
+//   6. Events (Rennen, Blitzer, Driftzone)
+//   7. Spieler-Auto & Fahrphysik
+//   8. KI-Fahrer
+//   9. Skill-Ketten
+//  10. Rennen
+//  11. Kamera, Effekte, Ton
+//  12. HUD & Menüs
+//  13. Eingabe & Spielschleife
+
+// =====================================================================
+// 1. Hilfsfunktionen & Spielstand
+// =====================================================================
+const WORLD = 1600;          // Kantenlänge der Welt in Metern
+const HALF = WORLD / 2;
+const WATER = -6;            // Höhe des Wasserspiegels
+const ROAD_W = 12;           // Straßenbreite
+const GRAVITY = 25;          // etwas stärker als echt – fühlt sich besser an
+const SRGB = THREE.SRGBColorSpace;
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+function smoothstep(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function angleDiff(a, b) {
+  let d = b - a;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+const fmt = (n) => Math.round(n).toLocaleString("de-CH");
+const kmh = (ms) => ms * 3.6;
+function fmtTime(t) {
+  const m = Math.floor(t / 60);
+  return `${m}:${(t - m * 60).toFixed(2).padStart(5, "0")}`;
+}
+// Zufallszahlen mit festem Startwert -> die Welt sieht jedes Mal gleich aus
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(1234);
+
+function loadSave() {
+  try { return JSON.parse(localStorage.getItem("alpenfestival") || "{}"); } catch { return {}; }
+}
+const save = Object.assign(
+  { credits: 0, skillPoints: 0, wins: 0, races: 0, bestRace: null, traps: {}, bestDrift: 0, car: "dakar" },
+  loadSave()
+);
+function storeSave() {
+  try { localStorage.setItem("alpenfestival", JSON.stringify(save)); } catch { /* egal */ }
+}
+
+// =====================================================================
+// 2. Landschaft
+// =====================================================================
+const LAKE = { x: 300, z: 120, r: 120 };
+
+// Große, sanfte Hügel + See + Berge am Rand. Straßen folgen dieser Höhe.
+function baseHeight(x, z) {
+  let h = 6 + Math.sin(x * 0.0045 + 0.5) * Math.cos(z * 0.0042) * 18;
+  const dl = (x - LAKE.x) ** 2 + (z - LAKE.z) ** 2;
+  h -= 45 * Math.exp(-dl / (LAKE.r * LAKE.r));
+  // Alpen am Rand: hohe Gipfel mit Graten
+  const d = Math.max(Math.abs(x), Math.abs(z)) / HALF;
+  const ridge = 1 + 0.35 * Math.sin(Math.atan2(z, x) * 9) + 0.2 * Math.sin(Math.atan2(z, x) * 23 + 1);
+  h += Math.max(0, (d - 0.72) / 0.28) ** 2 * 210 * ridge;
+  return h;
+}
+// Kleine Unebenheiten – nur abseits der Straßen
+function detailHeight(x, z) {
+  return Math.sin(x * 0.013 + 1.3) * Math.sin(z * 0.011 + 0.7) * 9
+    + Math.sin(x * 0.031 + 2) * Math.cos(z * 0.029 + 1) * 2.5;
+}
+function roadHeight(x, z) {
+  return Math.max(WATER + 1.5, baseHeight(x, z));
+}
+// Bodenhöhe an jeder Stelle: in Straßennähe wird das Gelände eingeebnet
+function groundHeight(x, z, road = nearestRoad(x, z)) {
+  const terrain = baseHeight(x, z) + detailHeight(x, z);
+  if (!road) return terrain;
+  const w = 1 - smoothstep(ROAD_W / 2 + 4, ROAD_W / 2 + 30, road.dist);
+  return lerp(terrain, roadHeight(x, z), w);
+}
+// Höhe, auf der ein Auto steht (im Wasser sinkt es etwas ein)
+function driveHeight(x, z) {
+  return Math.max(groundHeight(x, z), WATER - 0.9);
+}
+
+// =====================================================================
+// 3. Straßen
+// =====================================================================
+const ROAD_DEFS = [
+  { name: "Seeländer Ring", closed: true, pts: [[-520, -470], [-150, -560], [250, -540], [560, -380], [600, -20], [520, 330], [260, 540], [-120, 500], [-420, 560], [-600, 260], [-610, -120]] },
+  { name: "Seeuferstrasse", closed: true, pts: [[-250, -250], [60, -330], [330, -200], [420, 60], [300, 260], [80, 230], [-150, 320], [-330, 80]] },
+  { name: "Waldstrasse", closed: false, pts: [[-610, -120], [-430, -185], [-250, -250]] },
+  { name: "Gotthardpässli", closed: false, pts: [[300, 260], [330, 420], [260, 540]] },
+];
+
+const roads = ROAD_DEFS.map((def, id) => {
+  const curve = new THREE.CatmullRomCurve3(def.pts.map(([x, z]) => new THREE.Vector3(x, 0, z)), def.closed, "centripetal");
+  const length = curve.getLength();
+  const segs = Math.round(length / 2);
+  const pts = curve.getSpacedPoints(segs);
+  if (def.closed) pts.pop();
+  const n = pts.length;
+  const samples = pts.map((p, i) => ({ x: p.x, z: p.z, tx: 0, tz: 1, road: id, i }));
+  for (let i = 0; i < n; i++) {
+    const a = samples[def.closed ? (i - 1 + n) % n : Math.max(0, i - 1)];
+    const b = samples[def.closed ? (i + 1) % n : Math.min(n - 1, i + 1)];
+    const len = Math.hypot(b.x - a.x, b.z - a.z) || 1;
+    samples[i].tx = (b.x - a.x) / len;
+    samples[i].tz = (b.z - a.z) / len;
+  }
+  // Krümmung (für die KI: wie stark muss vor einer Kurve gebremst werden?)
+  const curv = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = samples[def.closed ? (i - 3 + n) % n : Math.max(0, i - 3)];
+    const b = samples[def.closed ? (i + 3) % n : Math.min(n - 1, i + 3)];
+    curv[i] = Math.abs(angleDiff(Math.atan2(a.tx, a.tz), Math.atan2(b.tx, b.tz))) / (6 * length / segs);
+  }
+  return { id, name: def.name, closed: def.closed, samples, n, length, spacing: length / segs, curv };
+});
+
+// Raster, damit wir schnell den nächsten Straßenpunkt finden
+const ROAD_CELL = 36;
+const roadGrid = new Map();
+const cellKey = (ix, iz) => ix * 10000 + iz;
+for (const r of roads) for (const s of r.samples) {
+  const k = cellKey(Math.floor(s.x / ROAD_CELL), Math.floor(s.z / ROAD_CELL));
+  if (!roadGrid.has(k)) roadGrid.set(k, []);
+  roadGrid.get(k).push(s);
+}
+function nearestRoad(x, z) {
+  const cx = Math.floor(x / ROAD_CELL), cz = Math.floor(z / ROAD_CELL);
+  let best = null, bd = Infinity;
+  for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+    const list = roadGrid.get(cellKey(cx + dx, cz + dz));
+    if (!list) continue;
+    for (const s of list) {
+      const d = (s.x - x) ** 2 + (s.z - z) ** 2;
+      if (d < bd) { bd = d; best = s; }
+    }
+  }
+  if (!best) return null;
+  // Abstand senkrecht zur Straße (genauer als der Abstand zum Punkt)
+  const ox = x - best.x, oz = z - best.z;
+  const along = ox * best.tx + oz * best.tz;
+  const perp = Math.abs(ox * best.tz - oz * best.tx);
+  const dist = Math.abs(along) <= 1.5 ? perp : Math.sqrt(bd);
+  return { s: best, dist };
+}
+// Punkt auf einer Straße nach gefahrener Strecke s (in Metern)
+function roadPointAt(road, s) {
+  if (road.closed) s = ((s % road.length) + road.length) % road.length;
+  else s = clamp(s, 0, road.length - 0.01);
+  const f = s / road.spacing;
+  const i = Math.floor(f) % road.n;
+  const j = road.closed ? (i + 1) % road.n : Math.min(road.n - 1, i + 1);
+  const t = f - Math.floor(f);
+  const a = road.samples[i], b = road.samples[j];
+  const tx = lerp(a.tx, b.tx, t), tz = lerp(a.tz, b.tz, t);
+  const l = Math.hypot(tx, tz) || 1;
+  const p = { x: lerp(a.x, b.x, t), z: lerp(a.z, b.z, t), tx: tx / l, tz: tz / l };
+  p.lx = p.tz; p.lz = -p.tx;            // Vektor nach links
+  p.yaw = Math.atan2(p.tx, p.tz);
+  return p;
+}
+
+// =====================================================================
+// 4. Szene, Licht, Himmel
+// =====================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.prepend(renderer.domElement);
+
+const HORIZON = 0xcfe6f7;
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(HORIZON);
+scene.fog = new THREE.Fog(HORIZON, 350, 1400);
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.3, 4000);
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+scene.add(new THREE.HemisphereLight(0xd8ecff, 0x5b7a3a, 1.3));
+const sun = new THREE.DirectionalLight(0xfff0d6, 2.8);
+const SUN_OFFSET = new THREE.Vector3(120, 220, 70);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 10, far: 600 });
+sun.shadow.bias = -0.0004;
+scene.add(sun, sun.target);
+
+// Himmelskuppel mit Farbverlauf
+const sky = (() => {
+  const geo = new THREE.SphereGeometry(3000, 32, 16);
+  const cols = [];
+  const top = new THREE.Color(0x2f7fe0), hor = new THREE.Color(HORIZON), c = new THREE.Color();
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    c.copy(hor).lerp(top, clamp(p.getY(i) / 1400, 0, 1) ** 0.7);
+    cols.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(cols, 3));
+  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false }));
+  m.renderOrder = -1;
+  scene.add(m);
+  return m;
+})();
+
+// =====================================================================
+// 5. Welt-Objekte
+// =====================================================================
+const hub = roadPointAt(roads[0], 0); // Start/Ziel und Festival-Gelände
+
+// --- Gelände ---
+(() => {
+  const SEG = 320;
+  const geo = new THREE.PlaneGeometry(WORLD, WORLD, SEG, SEG);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    const r = nearestRoad(x, z);
+    const h = groundHeight(x, z, r);
+    pos.setY(i, h);
+    const n = Math.sin(x * 0.05) * Math.cos(z * 0.045) * 0.5 + Math.sin(x * 0.13 + z * 0.11) * 0.5;
+    if (h < WATER + 1.2) c.setRGB(0.84, 0.77, 0.56, SRGB);                       // Sand
+    else if (h > 95 + n * 12) c.setRGB(0.95, 0.97, 1.0, SRGB);                   // Schnee
+    else if (h > 40) {                                                           // Fels
+      const t = smoothstep(40, 65, h);
+      c.setRGB(lerp(0.36, 0.5, t), lerp(0.55, 0.5, t), lerp(0.24, 0.48, t), SRGB);
+    } else c.setRGB(0.33 + n * 0.05, 0.62 + n * 0.06, 0.22 + n * 0.03, SRGB);     // Alpwiese
+    if (r && r.dist < ROAD_W / 2 + 3 && h > WATER) c.setRGB(0.55, 0.48, 0.36, SRGB); // Randstreifen
+    colors.set([c.r, c.g, c.b], i * 3);
+  }
+  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, new THREE.MeshLambertMaterial({ vertexColors: true }));
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+})();
+
+// --- Wasser ---
+const water = new THREE.Mesh(
+  new THREE.PlaneGeometry(WORLD * 3, WORLD * 3),
+  new THREE.MeshStandardMaterial({ color: 0x1fb3c8, transparent: true, opacity: 0.85, roughness: 0.12, metalness: 0.2 })
+);
+water.rotation.x = -Math.PI / 2;
+water.position.y = WATER;
+scene.add(water);
+
+// --- Straßen ---
+(() => {
+  const roadMat = new THREE.MeshStandardMaterial({ color: 0x3b3d44, roughness: 0.92, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 });
+  const lineMat = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.7, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
+  const yellowMat = lineMat.clone();
+  yellowMat.color.set(0xffc93c);
+
+  // Ein Band entlang der Straße zwischen den seitlichen Abständen o1 und o2
+  function ribbon(road, o1, o2, lift, keep) {
+    const p = [], idx = [];
+    for (const s of road.samples) {
+      const lx = s.tz, lz = -s.tx;
+      const y = roadHeight(s.x, s.z) + lift;
+      p.push(s.x + lx * o1, y, s.z + lz * o1, s.x + lx * o2, y, s.z + lz * o2);
+    }
+    const n = road.n;
+    for (let i = 0; i < (road.closed ? n : n - 1); i++) {
+      if (keep && !keep(i)) continue;
+      const a = i * 2, b = ((i + 1) % n) * 2;
+      idx.push(a, b, a + 1, a + 1, b, b + 1);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(p, 3));
+    g.setIndex(idx);
+    g.computeVertexNormals();
+    return g;
+  }
+  roads.forEach((road, k) => {
+    const lift = 0.12 + k * 0.01;
+    const surf = new THREE.Mesh(ribbon(road, -ROAD_W / 2, ROAD_W / 2, lift), roadMat);
+    surf.receiveShadow = true;
+    scene.add(surf);
+    const e = ROAD_W / 2 - 0.5;
+    scene.add(new THREE.Mesh(ribbon(road, e - 0.25, e, lift + 0.02), lineMat));
+    scene.add(new THREE.Mesh(ribbon(road, -e, -e + 0.25, lift + 0.02), lineMat));
+    scene.add(new THREE.Mesh(ribbon(road, -0.15, 0.15, lift + 0.02, (i) => i % 6 < 3), yellowMat));
+  });
+})();
+
+// --- Hindernisse (für Kollisionen) ---
+const OB_CELL = 20;
+const obGrid = new Map();
+function addObstacle(x, z, r) {
+  const k = cellKey(Math.floor(x / OB_CELL), Math.floor(z / OB_CELL));
+  if (!obGrid.has(k)) obGrid.set(k, []);
+  const o = { x, z, r };
+  obGrid.get(k).push(o);
+  return o;
+}
+function forNearbyObstacles(x, z, fn) {
+  const cx = Math.floor(x / OB_CELL), cz = Math.floor(z / OB_CELL);
+  for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+    const list = obGrid.get(cellKey(cx + dx, cz + dz));
+    if (list) for (const o of list) fn(o);
+  }
+}
+
+// --- Bäume (InstancedMesh: tausende Bäume in nur zwei Zeichenaufrufen) ---
+(() => {
+  const MAX = 2200;
+  const trunkGeo = new THREE.CylinderGeometry(0.25, 0.4, 3, 6).translate(0, 1.5, 0);
+  const crownGeo = new THREE.ConeGeometry(2.2, 6, 7).translate(0, 5.6, 0);
+  const trunks = new THREE.InstancedMesh(trunkGeo, new THREE.MeshLambertMaterial({ color: 0x6b4a2b }), MAX);
+  const crowns = new THREE.InstancedMesh(crownGeo, new THREE.MeshLambertMaterial({ color: 0xffffff }), MAX);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
+  const up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
+  let placed = 0;
+  for (let tries = 0; tries < 30000 && placed < MAX; tries++) {
+    const x = (rng() * 2 - 1) * (HALF - 40), z = (rng() * 2 - 1) * (HALF - 40);
+    if (Math.sin(x * 0.012) * Math.cos(z * 0.015) + rng() * 0.9 < 0.25) continue; // Wäldchen statt Gleichverteilung
+    const r = nearestRoad(x, z);
+    if (r && r.dist < ROAD_W / 2 + 6) continue;
+    if (Math.hypot(x - hub.x, z - hub.z) < 90) continue;
+    const h = groundHeight(x, z, r);
+    if (h < WATER + 1.5 || h > 75) continue;
+    const s = 0.7 + rng() * 0.8;
+    m.compose(p.set(x, h - 0.3, z), q.setFromAxisAngle(up, rng() * 6.28), sc.set(s, s * (0.8 + rng() * 0.5), s));
+    trunks.setMatrixAt(placed, m);
+    crowns.setMatrixAt(placed, m);
+    crowns.setColorAt(placed, c.setHSL(0.25 + rng() * 0.1, 0.45 + rng() * 0.2, 0.2 + rng() * 0.12, SRGB));
+    addObstacle(x, z, 0.6 * s);
+    placed++;
+  }
+  trunks.count = crowns.count = placed;
+  trunks.castShadow = crowns.castShadow = true;
+  scene.add(trunks, crowns);
+})();
+
+// --- Chalets entlang der Strassen ---
+(() => {
+  const stone = new THREE.MeshLambertMaterial({ color: 0xe9e4da });
+  const woods = [0x7a4a26, 0x8a5a32, 0x6b3f22].map((c) => new THREE.MeshLambertMaterial({ color: c }));
+  const roofMat = new THREE.MeshLambertMaterial({ color: 0x4a3c34 });
+  const winMat = new THREE.MeshLambertMaterial({ color: 0x26303d });
+  const flowerMat = new THREE.MeshLambertMaterial({ color: 0xe0242f });
+  // Giebel (Dreieck) als extrudierte Form
+  const gableShape = new THREE.Shape([new THREE.Vector2(-4.5, 0), new THREE.Vector2(4.5, 0), new THREE.Vector2(0, 3.2)]);
+  const gableGeo = new THREE.ExtrudeGeometry(gableShape, { depth: 8, bevelEnabled: false }).translate(0, 0, -4);
+  const slope = Math.atan2(3.2, 4.5);
+  let built = 0;
+  for (let tries = 0; tries < 500 && built < 50; tries++) {
+    const road = roads[Math.floor(rng() * 2)];
+    const s = road.samples[Math.floor(rng() * road.n)];
+    const side = rng() < 0.5 ? -1 : 1;
+    const off = ROAD_W / 2 + 12 + rng() * 10;
+    const x = s.x + s.tz * off * side, z = s.z - s.tx * off * side;
+    const r = nearestRoad(x, z);
+    if (!r || r.dist < ROAD_W / 2 + 8) continue;
+    if (Math.hypot(x - hub.x, z - hub.z) < 110) continue;
+    const h = groundHeight(x, z, r);
+    if (h < WATER + 2) continue;
+    let blocked = false;
+    forNearbyObstacles(x, z, (o) => { if (o.r > 3 && Math.hypot(o.x - x, o.z - z) < 16) blocked = true; });
+    if (blocked) continue;
+
+    const g = new THREE.Group();
+    const add = (geo, mat, px, py, pz) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(px, py, pz);
+      m.castShadow = m.receiveShadow = true;
+      g.add(m);
+      return m;
+    };
+    const wood = woods[Math.floor(rng() * woods.length)];
+    add(new THREE.BoxGeometry(9, 5.5, 8), stone, 0, -0.25, 0);        // gemauerter Sockel (reicht in den Hang)
+    add(new THREE.BoxGeometry(9, 3.5, 8), wood, 0, 4.25, 0);          // Holzgeschoss
+    add(gableGeo, wood, 0, 6, 0);                                     // Giebel
+    const roofGeo = new THREE.BoxGeometry(6.6, 0.35, 10);
+    add(roofGeo, roofMat, -2.3, 7.75, 0).rotation.z = slope;          // Dach links
+    add(roofGeo, roofMat, 2.3, 7.75, 0).rotation.z = -slope;          // Dach rechts
+    // Fenster mit roten Geranien
+    for (const sx of [-1, 1]) for (const wz of [-2, 2]) {
+      add(new THREE.BoxGeometry(0.1, 1.2, 1.2), winMat, sx * 4.52, 4.4, wz);
+      add(new THREE.BoxGeometry(0.4, 0.35, 1.4), flowerMat, sx * 4.65, 3.6, wz);
+    }
+    g.position.set(x, h, z);
+    g.rotation.y = Math.atan2(s.tx, s.tz);
+    scene.add(g);
+    addObstacle(x, z, 5.2);
+    built++;
+  }
+})();
+
+// --- Kühe auf der Alpwiese ---
+const cows = [];
+(() => {
+  const white = new THREE.MeshLambertMaterial({ color: 0xf4f1ea });
+  const brown = new THREE.MeshLambertMaterial({ color: 0x6b3a1e });
+  const dark = new THREE.MeshLambertMaterial({ color: 0x2a2420 });
+  const bell = new THREE.MeshStandardMaterial({ color: 0xd4a017, metalness: 0.8, roughness: 0.3 });
+  const body = new THREE.BoxGeometry(0.95, 0.9, 1.9);
+  const patch = new THREE.BoxGeometry(0.98, 0.5, 0.6);
+  const head = new THREE.BoxGeometry(0.5, 0.55, 0.65);
+  const leg = new THREE.BoxGeometry(0.18, 0.8, 0.18);
+  const bellGeo = new THREE.SphereGeometry(0.12, 8, 6);
+  for (let tries = 0; tries < 3000 && cows.length < 45; tries++) {
+    // Kühe stehen in kleinen Herden
+    const hx = (rng() * 2 - 1) * (HALF - 150), hz = (rng() * 2 - 1) * (HALF - 150);
+    for (let k = 0; k < 5 && cows.length < 45; k++) {
+      const x = hx + (rng() - 0.5) * 40, z = hz + (rng() - 0.5) * 40;
+      const r = nearestRoad(x, z);
+      if (r && r.dist < ROAD_W / 2 + 10) continue;
+      if (Math.hypot(x - hub.x, z - hub.z) < 100) continue;
+      const h = groundHeight(x, z, r);
+      if (h < WATER + 2 || h > 40) continue;
+      const g = new THREE.Group();
+      const add = (geo, mat, px, py, pz) => {
+        const m = new THREE.Mesh(geo, mat);
+        m.position.set(px, py, pz);
+        m.castShadow = true;
+        g.add(m);
+      };
+      add(body, white, 0, 1.15, 0);
+      add(patch, rng() < 0.5 ? brown : dark, 0, 1.3, rng() - 0.5);
+      add(head, white, 0, 1.35, 1.15);
+      add(bellGeo, bell, 0, 0.92, 1.0);
+      for (const lx of [-0.3, 0.3]) for (const lz of [-0.7, 0.7]) add(leg, dark, lx, 0.4, lz);
+      g.position.set(x, h, z);
+      g.rotation.y = rng() * Math.PI * 2;
+      scene.add(g);
+      addObstacle(x, z, 1.1).cow = true;
+      cows.push(g);
+    }
+  }
+})();
+
+// --- Alpengipfel am Horizont (inkl. Matterhorn) ---
+(() => {
+  const rock = new THREE.MeshLambertMaterial({ color: 0x8c96a8, fog: false });
+  const snow = new THREE.MeshLambertMaterial({ color: 0xf6f9ff, fog: false });
+  const peak = (x, z, height, radius, tilt = 0) => {
+    const g = new THREE.Group();
+    const m = new THREE.Mesh(new THREE.ConeGeometry(radius, height, 7), rock);
+    m.position.y = height / 2;
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(radius * 0.36, height * 0.36, 7), snow);
+    cap.position.y = height * 0.82 + 1;
+    g.add(m, cap);
+    g.position.set(x, -20, z);
+    g.rotation.set(tilt, rng() * Math.PI, tilt * 0.5);
+    scene.add(g);
+  };
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2 + rng() * 0.1;
+    const d = 1500 + rng() * 500;
+    peak(Math.cos(a) * d, Math.sin(a) * d, 500 + rng() * 450, 380 + rng() * 200);
+  }
+  peak(250, -1650, 1150, 360, 0.12); // das Matterhorn: steil und schief
+})();
+
+// --- Wolken ---
+(() => {
+  const N = 140;
+  const geo = new THREE.IcosahedronGeometry(1, 1);
+  const mesh = new THREE.InstancedMesh(geo, new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0x8899aa, fog: false }), N);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
+  for (let i = 0; i < N; i += 4) {
+    const cx = (rng() * 2 - 1) * 1600, cz = (rng() * 2 - 1) * 1600, cy = 220 + rng() * 120;
+    for (let k = 0; k < 4; k++) {
+      const r = 25 + rng() * 25;
+      m.compose(p.set(cx + (rng() - 0.5) * 80, cy + rng() * 10, cz + (rng() - 0.5) * 50), q, s.set(r * 1.4, r * 0.5, r));
+      mesh.setMatrixAt(i + k, m);
+    }
+  }
+  scene.add(mesh);
+})();
+
+// --- Schrift auf Bannern ---
+function labelTexture(text, bg, fg) {
+  const c = document.createElement("canvas");
+  c.width = 1024; c.height = 128;
+  const g = c.getContext("2d");
+  const grad = g.createLinearGradient(0, 0, 1024, 0);
+  grad.addColorStop(0, bg[0]); grad.addColorStop(1, bg[1]);
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 1024, 128);
+  g.fillStyle = fg;
+  let size = 80;
+  do g.font = `italic 900 ${size}px system-ui, sans-serif`; while (g.measureText(text).width > 960 && size-- > 20);
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.fillText(text, 512, 68);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = SRGB;
+  return t;
+}
+
+// Schweizer Fahne: rotes Quadrat mit weissem Kreuz
+const swissFlagMat = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  g.fillStyle = "#da291c";
+  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = "#ffffff";
+  g.fillRect(26, 13, 12, 38);
+  g.fillRect(13, 26, 38, 12);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = SRGB;
+  return new THREE.MeshLambertMaterial({ map: t, side: THREE.DoubleSide });
+})();
+
+// Torbogen über der Strasse
+function makeArch(p, text, colors) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x20232b, roughness: 0.5 });
+  const span = ROAD_W + 4;
+  for (const sx of [-1, 1]) {
+    const pillar = new THREE.Mesh(new THREE.BoxGeometry(0.9, 9, 0.9), mat);
+    pillar.position.set(sx * span / 2, 4.5, 0);
+    pillar.castShadow = true;
+    g.add(pillar);
+  }
+  const tex = labelTexture(text, colors, "#ffffff");
+  const banner = new THREE.Mesh(new THREE.BoxGeometry(span + 1, 1.8, 0.4), [
+    mat, mat, mat, mat,
+    new THREE.MeshBasicMaterial({ map: tex }),
+    new THREE.MeshBasicMaterial({ map: tex }),
+  ]);
+  banner.position.y = 8.6;
+  banner.castShadow = true;
+  g.add(banner);
+  g.position.set(p.x, roadHeight(p.x, p.z), p.z);
+  g.rotation.y = p.yaw;
+  scene.add(g);
+  for (const sx of [-1, 1]) addObstacle(p.x + p.lx * sx * span / 2, p.z + p.lz * sx * span / 2, 0.7);
+  return g;
+}
+
+// --- Festival-Gelände ---
+(() => {
+  makeArch(hub, "ALPENFESTIVAL SCHWEIZ", ["#ff2e88", "#ff8a00"]);
+  const tentCols = [0xff2e88, 0xffd23f, 0x19c3ff, 0xff8a00, 0x8a5cff, 0xffffff];
+  let k = 0;
+  for (let row = 0; row < 2; row++) for (let i = 0; i < 5; i++) {
+    const along = -60 + i * 26 + row * 13;
+    const off = ROAD_W / 2 + 22 + row * 20;
+    const x = hub.x + hub.tx * along + hub.lx * off;
+    const z = hub.z + hub.tz * along + hub.lz * off;
+    const h = groundHeight(x, z);
+    const col = tentCols[k++ % tentCols.length];
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(6, 6, 3.5, 10), new THREE.MeshLambertMaterial({ color: 0xffffff }));
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(7, 4.5, 10), new THREE.MeshLambertMaterial({ color: col }));
+    base.position.set(x, h + 1.5, z);
+    roof.position.set(x, h + 5.5, z);
+    base.castShadow = roof.castShadow = true;
+    scene.add(base, roof);
+    addObstacle(x, z, 6);
+    // Fahne
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 6), new THREE.MeshLambertMaterial({ color: 0xdddddd }));
+    pole.position.set(x, h + 10, z);
+    const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1.8), swissFlagMat);
+    flag.position.set(x + 0.9, h + 12.1, z);
+    scene.add(pole, flag);
+  }
+})();
+
+// =====================================================================
+// 6. Events: Rennen, Blitzer, Driftzone
+// =====================================================================
+// Lichtstrahl als Event-Markierung (wie bei Festival-Spielen)
+function makeBeam(x, z, color) {
+  const g = new THREE.Group();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(4, 4, 220, 24, 1, true),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, side: THREE.DoubleSide, depthWrite: false, fog: false })
+  );
+  beam.position.y = 110;
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(6, 7.2, 40),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.8, side: THREE.DoubleSide, depthWrite: false })
+  );
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.4;
+  g.add(beam, ring);
+  g.position.set(x, groundHeight(x, z), z);
+  scene.add(g);
+  return g;
+}
+
+const RACE_START_S = -70;
+const raceMarkerPos = roadPointAt(roads[0], RACE_START_S);
+const raceBeam = makeBeam(raceMarkerPos.x, raceMarkerPos.z, 0x19a8ff);
+
+// Blitzer
+const traps = [
+  { road: 0, s: roads[0].length * 0.2, name: "Blitzer Seeland" },
+  { road: 0, s: roads[0].length * 0.57, name: "Blitzer Alpweg" },
+  { road: 1, s: roads[1].length * 0.72, name: "Blitzer Seeufer" },
+].map((t) => {
+  const p = roadPointAt(roads[t.road], t.s);
+  const sx = p.x - p.lx * (ROAD_W / 2 + 2.5), sz = p.z - p.lz * (ROAD_W / 2 + 2.5);
+  const h = groundHeight(sx, sz);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 4), new THREE.MeshStandardMaterial({ color: 0x888888 }));
+  pole.position.set(sx, h + 2, sz);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 1.2), new THREE.MeshStandardMaterial({ color: 0x8a5cff, emissive: 0x8a5cff, emissiveIntensity: 0.6 }));
+  head.position.set(sx, h + 4.2, sz);
+  head.rotation.y = p.yaw;
+  pole.castShadow = head.castShadow = true;
+  scene.add(pole, head);
+  addObstacle(sx, sz, 0.4);
+  return { ...t, x: p.x, z: p.z, cooldown: 0, head };
+});
+
+// Driftzone auf dem Seeuferweg
+const driftZone = (() => {
+  const road = roads[1];
+  const i0 = Math.floor(road.n * 0.06), i1 = Math.floor(road.n * 0.32);
+  const a = roadPointAt(road, i0 * road.spacing), b = roadPointAt(road, i1 * road.spacing);
+  makeArch(a, "DRIFTZONE", ["#ff8a00", "#ffd23f"]);
+  makeArch(b, "DRIFTZONE", ["#ffd23f", "#ff8a00"]);
+  return { road: 1, i0, i1, x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, ax: a.x, az: a.z, active: false, score: 0 };
+})();
+
+// =====================================================================
+// 7. Spieler-Auto & Fahrphysik
+// =====================================================================
+let carSpec = CARS.find((c) => c.id === save.car) || CARS[0];
+let playerMesh = null;
+
+const car = {
+  x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, vy: 0,
+  vF: 0, vS: 0, steer: 0, onGround: true, airTime: 0, lastG: 0,
+  pitch: 0, roll: 0, slope: 0, surface: "road", roadName: "",
+  wheelSpin: 0, throttle: 0, braking: false,
+};
+
+function setPlayerCar(spec) {
+  carSpec = spec;
+  save.car = spec.id;
+  storeSave();
+  if (playerMesh) scene.remove(playerMesh.group);
+  playerMesh = makeCarMesh(spec);
+  scene.add(playerMesh.group);
+}
+setPlayerCar(carSpec);
+
+function placeCar(roadId, s, lane) {
+  const p = roadPointAt(roads[roadId], s);
+  car.x = p.x + p.lx * lane;
+  car.z = p.z + p.lz * lane;
+  car.yaw = p.yaw;
+  car.vx = car.vz = car.vy = car.vF = car.vS = car.steer = 0;
+  car.y = car.lastG = driveHeight(car.x, car.z);
+  car.onGround = true;
+  car.airTime = 0;
+}
+
+// Zurück auf die nächste Strasse (Taste R)
+function resetToRoad() {
+  let best = null, bd = Infinity;
+  for (const r of roads) for (const s of r.samples) {
+    const d = (s.x - car.x) ** 2 + (s.z - car.z) ** 2;
+    if (d < bd) { bd = d; best = s; }
+  }
+  const road = roads[best.road];
+  const dir = Math.cos(angleDiff(car.yaw, Math.atan2(best.tx, best.tz))) >= 0 ? 1 : -1;
+  placeCar(best.road, best.i * road.spacing, -3 * dir);
+  if (dir < 0) car.yaw += Math.PI;
+  breakChain("Zurückgesetzt");
+}
+
+// Fahrwerte je nach Untergrund
+function surfaceParams() {
+  const o = carSpec.off;
+  if (car.surface === "water") return { top: 10, accel: 4, grip: 2 };
+  if (car.surface === "grass") return { top: carSpec.top * o, accel: carSpec.accel * (0.5 + 0.5 * o), grip: carSpec.grip * (0.45 + 0.5 * o) };
+  return { top: carSpec.top, accel: carSpec.accel, grip: carSpec.grip };
+}
+
+// Ein kleiner Physik-Schritt (wird mehrmals pro Bild aufgerufen, damit alles stabil bleibt)
+function stepCar(h, inp) {
+  const S = surfaceParams();
+  if (car.onGround) {
+    const sp = Math.abs(car.vF);
+    const rate = 2.3 / (1 + sp * 0.03) * Math.min(1, sp / 3);
+    car.yaw += car.steer * rate * Math.sign(car.vF || 1) * (inp.handbrake ? 1.45 : 1) * h;
+  }
+  const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+  const lx = fz, lz = -fx;
+  // Geschwindigkeit aufteilen in "vorwärts" und "seitwärts"
+  let vF = car.vx * fx + car.vz * fz;
+  let vS = car.vx * lx + car.vz * lz;
+
+  if (car.onGround) {
+    if (inp.throttle) {
+      if (vF < -0.5) vF += 25 * h;
+      else if (vF < S.top) vF += S.accel * (1 - (vF / S.top) ** 2) * h;
+    }
+    if (vF > S.top) vF -= (vF - S.top) * 1.3 * h;
+    if (inp.brake) {
+      if (vF > 0.5) vF -= 30 * h;
+      else if (vF > -14) vF -= 9 * h;
+    }
+    if (!inp.throttle && !inp.brake) vF -= Math.sign(vF) * Math.min(Math.abs(vF), (2 + Math.abs(vF) * 0.02) * h);
+    if (inp.handbrake) vF -= Math.sign(vF) * Math.min(Math.abs(vF), 7 * h);
+    vF -= GRAVITY * car.slope * 0.8 * h;             // bergauf langsamer, bergab schneller
+    vS *= Math.exp(-(inp.handbrake ? 1.0 : S.grip) * h); // Reifen-Grip baut Seitwärtsrutschen ab
+  } else {
+    vF *= 1 - 0.05 * h;
+  }
+
+  car.vF = vF; car.vS = vS;
+  car.vx = fx * vF + lx * vS;
+  car.vz = fz * vF + lz * vS;
+  car.x += car.vx * h;
+  car.z += car.vz * h;
+
+  // Höhe: Schwerkraft, Bodenkontakt und Sprünge
+  car.vy -= GRAVITY * h;
+  car.y += car.vy * h;
+  const g = driveHeight(car.x, car.z);
+  if (car.y <= g) {
+    if (!car.onGround) onLanding(-car.vy);
+    car.y = g;
+    car.vy = Math.max(car.vy, clamp((g - car.lastG) / h, -40, 14));
+    car.onGround = true;
+  } else if (car.y > g + 0.3) {
+    car.onGround = false;
+  }
+  car.lastG = g;
+}
+
+function onLanding(impact) {
+  if (car.airTime > 0.45) {
+    const pts = car.airTime * 1400;
+    completeSkill(car.airTime > 1.1 ? "Grosser Sprung" : "Sprung", pts);
+  }
+  car.airTime = 0;
+  cam.shake = Math.max(cam.shake, clamp(impact / 25, 0, 0.8));
+}
+
+function collideCar() {
+  // Bäume, Häuser, Zelte …
+  forNearbyObstacles(car.x, car.z, (o) => {
+    const dx = car.x - o.x, dz = car.z - o.z;
+    const d = Math.hypot(dx, dz), min = o.r + 1.3;
+    if (d >= min || d === 0) return;
+    const nx = dx / d, nz = dz / d;
+    car.x += nx * (min - d);
+    car.z += nz * (min - d);
+    const rel = car.vx * nx + car.vz * nz;
+    if (rel < 0) {
+      car.vx -= nx * rel * 1.5;
+      car.vz -= nz * rel * 1.5;
+      car.vx *= 0.7; car.vz *= 0.7;
+      if (o.cow && -rel > 2) notify("Muuh! 🐄 Pass auf die Kühe auf!", "red");
+      if (-rel > 7) crash(-rel);
+    }
+  });
+  // Weltgrenze
+  const lim = HALF - 25;
+  if (Math.abs(car.x) > lim) { car.x = Math.sign(car.x) * lim; car.vx *= -0.3; }
+  if (Math.abs(car.z) > lim) { car.z = Math.sign(car.z) * lim; car.vz *= -0.3; }
+}
+
+function crash(impact) {
+  cam.shake = Math.max(cam.shake, clamp(impact / 20, 0.3, 1));
+  breakChain("Crash!");
+}
+
+// =====================================================================
+// 8. KI-Fahrer
+// =====================================================================
+const AI_SETUP = [
+  { name: "Lena", car: "blitz", skill: 0.97 },
+  { name: "Luca", car: "donner", skill: 0.95 },
+  { name: "Noah", car: "wuestenfuchs", skill: 0.96 },
+  { name: "Mia", car: "falke", skill: 0.9 },
+  { name: "Elias", car: "nordwind", skill: 0.99 },
+];
+const aiCars = AI_SETUP.map((a, i) => {
+  const spec = CARS.find((c) => c.id === a.car);
+  const mesh = makeCarMesh(spec);
+  scene.add(mesh.group);
+  return {
+    ...a, spec, mesh,
+    s: roads[0].length * (i + 0.5) / AI_SETUP.length,
+    lane: -3, laneTarget: -3, speed: 20, racing: false, finished: false, finishTime: 0,
+    x: 0, y: 0, z: 0, yaw: 0, nearCd: 0, wheelSpin: 0,
+  };
+});
+
+function updateAI(ai, dt, frozen) {
+  const road = roads[0];
+  const L = road.length;
+  const idx = Math.floor((((ai.s % L) + L) % L) / road.spacing);
+  // Wunschtempo: Höchsttempo, aber vor Kurven rechtzeitig bremsen
+  const lat = 7.5 + ai.spec.grip * 0.3;
+  // Im Rennen fahren die Gegner ungefähr so schnell wie dein Auto (wie Klassen-Rennen)
+  let target = ai.racing ? Math.min(ai.spec.top, carSpec.top * 1.02) * ai.skill : ai.spec.top * 0.55;
+  if (ai.racing && race.state === "running") {
+    // Gummiband: wer weit zurück liegt, gibt etwas mehr Gas
+    const gap = playerRaceProgress() - ai.s;
+    target *= gap > 150 ? 1.08 : gap < -250 ? 0.92 : 1;
+  }
+  for (let k = 2; k < 90; k += 2) {
+    const j = (idx + k) % road.n;
+    const vc = Math.sqrt(lat / Math.max(road.curv[j], 1e-4));
+    target = Math.min(target, Math.sqrt(vc * vc + 2 * 11 * k * road.spacing));
+  }
+  if (frozen) target = 0;
+  if (ai.speed < target) ai.speed = Math.min(target, ai.speed + ai.spec.accel * 0.75 * dt);
+  else ai.speed = Math.max(target, ai.speed - 16 * dt);
+  ai.s += ai.speed * dt;
+
+  // Spurwechsel, wenn ein anderes KI-Auto im Weg ist
+  if (ai.racing) {
+    for (const o of aiCars) {
+      if (o === ai) continue;
+      const ds = o.s - ai.s;
+      if (ds > 0 && ds < 14 && Math.abs(o.lane - ai.lane) < 2.5 && o.speed < ai.speed) ai.laneTarget = -ai.laneTarget;
+    }
+  }
+  ai.lane += clamp(ai.laneTarget - ai.lane, -2 * dt, 2 * dt);
+
+  const p = roadPointAt(road, ai.s);
+  ai.x = p.x + p.lx * ai.lane;
+  ai.z = p.z + p.lz * ai.lane;
+  ai.yaw = p.yaw;
+  ai.y = roadHeight(ai.x, ai.z) + 0.12;
+  const pitch = Math.atan2(roadHeight(p.x + p.tx * 2, p.z + p.tz * 2) - roadHeight(p.x - p.tx * 2, p.z - p.tz * 2), 4);
+  ai.mesh.group.position.set(ai.x, ai.y, ai.z);
+  ai.mesh.group.rotation.set(-pitch, ai.yaw, 0, "YXZ");
+  ai.wheelSpin += ai.speed * dt / ai.mesh.radius;
+  for (const w of ai.mesh.wheels) w.spin.rotation.x = ai.wheelSpin;
+
+  if (ai.racing && !ai.finished && ai.s >= L) {
+    ai.finished = true;
+    ai.finishTime = race.time;
+  }
+
+  // Zusammenstoß mit dem Spieler
+  const dx = car.x - ai.x, dz = car.z - ai.z;
+  const d = Math.hypot(dx, dz);
+  ai.nearCd -= dt;
+  if (d < 2.9 && d > 0 && Math.abs(car.y - ai.y) < 2) {
+    const nx = dx / d, nz = dz / d;
+    car.x += nx * (2.9 - d);
+    car.z += nz * (2.9 - d);
+    const avx = Math.sin(ai.yaw) * ai.speed, avz = Math.cos(ai.yaw) * ai.speed;
+    const rel = (car.vx - avx) * nx + (car.vz - avz) * nz;
+    if (rel < 0) {
+      car.vx -= nx * rel * 1.2;
+      car.vz -= nz * rel * 1.2;
+      ai.speed *= 0.93;
+      if (-rel > 9) crash(-rel);
+    }
+    ai.nearCd = 2;
+  } else if (d < 5 && ai.nearCd <= 0 && Math.hypot(car.vx, car.vz) > 15 && mode === "drive") {
+    // knapp vorbei!
+    ai.nearCd = 3;
+    completeSkill("Knapp vorbei", 350);
+  }
+}
+
+// =====================================================================
+// 9. Skill-Ketten
+// =====================================================================
+const skill = { chain: 0, mult: 1, timer: 0, active: null, activePts: 0, grace: 0 };
+const CHAIN_TIME = 4;
+
+function completeSkill(name, pts) {
+  pts = Math.round(pts);
+  if (pts <= 0) return;
+  skill.chain += pts;
+  skill.mult = Math.min(10, skill.mult + 1);
+  skill.timer = CHAIN_TIME;
+  skill.lastName = `${name} +${fmt(pts)}`;
+  skill.lastShow = 1.6;
+}
+function breakChain(reason) {
+  if (skill.chain > 0 || skill.activePts > 0) notify(`${reason} Skill-Kette verloren`, "red");
+  skill.chain = 0; skill.mult = 1; skill.timer = 0; skill.active = null; skill.activePts = 0;
+  if (driftZone.active) driftZone.score = 0;
+}
+function bankChain() {
+  const total = skill.chain * skill.mult;
+  save.skillPoints += total;
+  const cr = Math.round(total / 5);
+  save.credits += cr;
+  storeSave();
+  notify(`+${fmt(total)} Skillpunkte  ·  +${fmt(cr)} CHF`, "");
+  skill.chain = 0; skill.mult = 1;
+}
+
+function updateSkills(dt) {
+  const speed = Math.hypot(car.vx, car.vz);
+  let current = null, rate = 0;
+  if (car.onGround && Math.abs(car.vS) > 3 && Math.abs(car.vF) > 8 && car.surface !== "water") {
+    current = "Drift";
+    rate = Math.abs(car.vS) * Math.abs(car.vF) * 2.6;
+  } else if (car.onGround && speed > 56) {
+    current = "Raser";
+    rate = 280;
+  }
+  if (!car.onGround) car.airTime += dt;
+
+  if (current) {
+    if (skill.active && skill.active !== current) finishActive();
+    skill.active = current;
+    skill.activePts += rate * dt;
+    skill.grace = 0.35;
+    skill.timer = CHAIN_TIME;
+    if (current === "Drift" && driftZone.active) driftZone.score += rate * dt;
+  } else if (skill.active) {
+    skill.grace -= dt;
+    if (skill.grace <= 0) finishActive();
+  } else if (skill.chain > 0 && car.onGround) {
+    skill.timer -= dt;
+    if (skill.timer <= 0) bankChain();
+  }
+}
+function finishActive() {
+  if (skill.activePts > 80) completeSkill(skill.active, skill.activePts);
+  skill.active = null;
+  skill.activePts = 0;
+}
+
+// Blitzer und Driftzone prüfen
+function updateEvents(dt, road) {
+  const speedKmh = kmh(Math.hypot(car.vx, car.vz));
+  for (const t of traps) {
+    t.cooldown -= dt;
+    t.head.material.emissiveIntensity = t.cooldown > 1.5 ? 3 : 0.6;
+    if (t.cooldown <= 0 && Math.hypot(car.x - t.x, car.z - t.z) < ROAD_W / 2 + 2) {
+      t.cooldown = 2.5;
+      const v = Math.round(speedKmh);
+      const best = save.traps[t.name] || 0;
+      const stars = v >= 220 ? 3 : v >= 170 ? 2 : v >= 120 ? 1 : 0;
+      let msg = `${t.name}: ${v} km/h ${"★".repeat(stars)}${"☆".repeat(3 - stars)}`;
+      if (v > best) {
+        save.traps[t.name] = v;
+        const reward = 300 + stars * 700;
+        save.credits += reward;
+        storeSave();
+        msg += `  Neuer Rekord! +${fmt(reward)} CHF`;
+      }
+      notify(msg, "gold");
+    }
+  }
+
+  const inZone = road && road.s.road === driftZone.road && road.s.i >= driftZone.i0 && road.s.i <= driftZone.i1 && road.dist < ROAD_W;
+  if (inZone && !driftZone.active) {
+    driftZone.active = true;
+    driftZone.score = 0;
+    notify("Driftzone! ★ 2.500  ★★ 6.000  ★★★ 10.000", "gold");
+  } else if (!inZone && driftZone.active) {
+    driftZone.active = false;
+    const sc = Math.round(driftZone.score);
+    const stars = sc >= 10000 ? 3 : sc >= 6000 ? 2 : sc >= 2500 ? 1 : 0;
+    let msg = `Driftzone: ${fmt(sc)} Punkte ${"★".repeat(stars)}${"☆".repeat(3 - stars)}`;
+    if (sc > save.bestDrift) {
+      const reward = 500 + stars * 1500;
+      save.bestDrift = sc;
+      save.credits += reward;
+      storeSave();
+      msg += `  Rekord! +${fmt(reward)} CHF`;
+    }
+    notify(msg, "gold");
+  }
+}
+
+// =====================================================================
+// 10. Rennen
+// =====================================================================
+const race = { state: "none", t: 0, time: 0, next: 0, cps: [], flash: 0 };
+{
+  const L = roads[0].length;
+  for (let s = 300; s < L - 150; s += 300) race.cps.push({ s, ...roadPointAt(roads[0], s) });
+  race.cps.push({ s: L, ...roadPointAt(roads[0], L) });
+}
+const cpRing = new THREE.Mesh(
+  new THREE.TorusGeometry(ROAD_W * 0.62, 0.45, 8, 48),
+  new THREE.MeshBasicMaterial({ color: 0x19c3ff, transparent: true, opacity: 0.85 })
+);
+cpRing.visible = false;
+scene.add(cpRing);
+
+function playerRaceProgress() {
+  const cp = race.cps[Math.min(race.next, race.cps.length - 1)];
+  return cp.s - Math.hypot(car.x - cp.x, car.z - cp.z);
+}
+
+function startRace() {
+  race.state = "countdown";
+  race.t = 3;
+  race.time = 0;
+  race.next = 0;
+  placeCar(0, -22, -3);
+  const grid = [[-22, 3], [-36, -3], [-36, 3], [-50, -3], [-50, 3]];
+  aiCars.forEach((ai, i) => {
+    ai.s = grid[i][0];
+    ai.lane = ai.laneTarget = grid[i][1];
+    ai.speed = 0;
+    ai.racing = true;
+    ai.finished = false;
+  });
+  cam.yaw = car.yaw;
+  notify("Seeland-Sprint · 1 Runde · 6 Fahrer", "blue");
+}
+
+function endRaceCruise() {
+  race.state = "none";
+  cpRing.visible = false;
+  for (const ai of aiCars) { ai.racing = false; ai.laneTarget = -3; }
+}
+
+function abortRace() {
+  if (race.state === "none") return;
+  endRaceCruise();
+  notify("Rennen abgebrochen", "red");
+}
+
+function updateRace(dt) {
+  if (race.state === "none") return;
+  if (race.state === "countdown") {
+    race.t -= dt;
+    if (race.t <= 0) {
+      race.state = "running";
+      race.flash = 1;
+    }
+  } else if (race.state === "running") {
+    race.time += dt;
+    const cp = race.cps[race.next];
+    if (Math.hypot(car.x - cp.x, car.z - cp.z) < ROAD_W + 3) {
+      race.next++;
+      if (race.next >= race.cps.length) return finishRace();
+      notify(`Checkpoint ${race.next}/${race.cps.length - 1}  ·  ${fmtTime(race.time)}`, "blue");
+    }
+  }
+  race.flash -= dt;
+  const cp = race.cps[race.next];
+  cpRing.visible = true;
+  cpRing.position.set(cp.x, roadHeight(cp.x, cp.z) + 4, cp.z);
+  cpRing.rotation.set(0, cp.yaw, 0);
+  cpRing.material.color.set(race.next === race.cps.length - 1 ? 0xffd23f : 0x19c3ff);
+}
+
+function racePosition() {
+  const me = playerRaceProgress();
+  return 1 + aiCars.filter((a) => (a.finished ? Infinity : a.s) > me).length;
+}
+
+function finishRace() {
+  const time = race.time;
+  const place = 1 + aiCars.filter((a) => a.finished).length;
+  const reward = [25000, 16000, 11000, 7000, 5000, 3000][place - 1];
+  save.credits += reward;
+  save.races++;
+  if (place === 1) save.wins++;
+  const newBest = !save.bestRace || time < save.bestRace;
+  if (newBest) save.bestRace = time;
+  storeSave();
+
+  // Ergebnistabelle: noch fahrende KI-Autos bekommen eine geschätzte Zeit
+  const L = roads[0].length;
+  const rows = aiCars.map((a) => ({
+    name: `${a.name} (${a.spec.name})`,
+    time: a.finished ? a.finishTime : time + (L - a.s) / Math.max(a.speed, 10),
+  }));
+  rows.push({ name: `Du (${carSpec.name})`, time, me: true });
+  rows.sort((a, b) => a.time - b.time);
+  $("results-title").textContent = place === 1 ? "🏆 Sieg!" : `Platz ${place} von ${rows.length}`;
+  $("results-table").innerHTML = rows.map((r, i) =>
+    `<tr class="${r.me ? "me" : ""}"><td>${i + 1}.</td><td>${r.name}</td><td>${fmtTime(r.time)}</td></tr>`).join("");
+  $("results-reward").textContent = `+${fmt(reward)} CHF` + (newBest ? " · Neue Bestzeit!" : "");
+  endRaceCruise();
+  setMode("results");
+}
+
+// =====================================================================
+// 11. Kamera, Effekte, Ton
+// =====================================================================
+const cam = { yaw: 0, mode: 0, shake: 0, pos: new THREE.Vector3(), orbit: 0 };
+
+function updateCamera(dt) {
+  const speed = Math.hypot(car.vx, car.vz);
+  const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+  if (mode === "title" || mode === "garage") {
+    cam.orbit += dt * 0.25;
+    const r = mode === "garage" ? 7.5 : 11;
+    camera.position.set(car.x + Math.sin(cam.orbit) * r, car.y + (mode === "garage" ? 2.2 : 3.5), car.z + Math.cos(cam.orbit) * r);
+    // in der Garage das Auto etwas nach rechts schieben, weil links die Liste ist
+    const side = mode === "garage" ? 1.6 : 0;
+    camera.lookAt(car.x - Math.cos(cam.orbit) * side, car.y + 0.9, car.z + Math.sin(cam.orbit) * side);
+    camera.fov = 55;
+  } else if (cam.mode === 0) {
+    cam.yaw += angleDiff(cam.yaw, car.yaw) * (1 - Math.exp(-5 * dt));
+    const dist = 7.2 + speed * 0.035, height = 2.5 + speed * 0.01;
+    const want = new THREE.Vector3(car.x - Math.sin(cam.yaw) * dist, car.y + height, car.z - Math.cos(cam.yaw) * dist);
+    want.y = Math.max(want.y, driveHeight(want.x, want.z) + 1.2);
+    cam.pos.lerp(want, 1 - Math.exp(-18 * dt));
+    camera.position.copy(cam.pos);
+    camera.lookAt(car.x + fx * 3, car.y + 1.3, car.z + fz * 3);
+    camera.fov = lerp(camera.fov, Math.min(90, 62 + speed * 0.32), 1 - Math.exp(-3 * dt));
+  } else {
+    // Motorhauben-Kamera
+    const b = carSpec.body;
+    camera.position.set(car.x + fx * 0.6, car.y + b.ride + b.h + b.ch + 0.15, car.z + fz * 0.6);
+    camera.lookAt(car.x + fx * 30, car.y + 1.2 + car.slope * 30, car.z + fz * 30);
+    camera.fov = lerp(camera.fov, Math.min(95, 68 + speed * 0.32), 1 - Math.exp(-3 * dt));
+    cam.pos.copy(camera.position);
+  }
+  if (cam.shake > 0) {
+    camera.position.x += (Math.random() - 0.5) * cam.shake;
+    camera.position.y += (Math.random() - 0.5) * cam.shake;
+    cam.shake = Math.max(0, cam.shake - dt * 1.5);
+  }
+  camera.updateProjectionMatrix();
+  sky.position.copy(camera.position);
+  sun.position.set(car.x + SUN_OFFSET.x, car.y + SUN_OFFSET.y, car.z + SUN_OFFSET.z);
+  sun.target.position.set(car.x, car.y, car.z);
+}
+
+// Reifenqualm
+const smokeTex = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+})();
+const smoke = Array.from({ length: 70 }, () => {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
+  s.visible = false;
+  scene.add(s);
+  return { s, life: 0, max: 1 };
+});
+let smokeIdx = 0, smokeAcc = 0;
+function updateSmoke(dt, amount, color) {
+  smokeAcc += amount * dt * 40;
+  const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+  const b = carSpec.body;
+  while (smokeAcc > 1) {
+    smokeAcc--;
+    const p = smoke[smokeIdx++ % smoke.length];
+    const side = Math.random() < 0.5 ? -1 : 1;
+    p.s.position.set(car.x - fx * b.wb / 2 + fz * side * b.w * 0.45, car.y + 0.4, car.z - fz * b.wb / 2 - fx * side * b.w * 0.45);
+    p.s.material.color.set(color);
+    p.life = p.max = 0.8 + Math.random() * 0.6;
+    p.s.visible = true;
+  }
+  for (const p of smoke) {
+    if (p.life <= 0) continue;
+    p.life -= dt;
+    const t = 1 - p.life / p.max;
+    p.s.scale.setScalar(1 + t * 4);
+    p.s.position.y += dt * 1.2;
+    p.s.material.opacity = 0.45 * (1 - t);
+    if (p.life <= 0) p.s.visible = false;
+  }
+}
+
+// Motorsound mit der Web Audio API (keine Sounddateien nötig)
+let audio = null, muted = false;
+function initAudio() {
+  if (audio) return;
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const master = ctx.createGain();
+    master.gain.value = 0.45;
+    master.connect(ctx.destination);
+    const o1 = ctx.createOscillator(), o2 = ctx.createOscillator();
+    o1.type = "sawtooth"; o2.type = "square";
+    const filt = ctx.createBiquadFilter();
+    filt.type = "lowpass";
+    const eg = ctx.createGain();
+    eg.gain.value = 0;
+    o1.connect(filt); o2.connect(filt); filt.connect(eg); eg.connect(master);
+    o1.start(); o2.start();
+    const buf = ctx.createBuffer(1, ctx.sampleRate, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < data.length; i++) data[i] = Math.random() * 2 - 1;
+    const noise = ctx.createBufferSource();
+    noise.buffer = buf;
+    noise.loop = true;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass"; bp.frequency.value = 1700; bp.Q.value = 2.5;
+    const sg = ctx.createGain();
+    sg.gain.value = 0;
+    noise.connect(bp); bp.connect(sg); sg.connect(master);
+    noise.start();
+    audio = { ctx, o1, o2, filt, eg, sg };
+  } catch { /* kein Ton verfügbar */ }
+}
+function updateAudio(rpm, throttle, skid, on) {
+  if (!audio) return;
+  const t = audio.ctx.currentTime;
+  const f = rpm / 30;
+  audio.o1.frequency.setTargetAtTime(f, t, 0.04);
+  audio.o2.frequency.setTargetAtTime(f * 0.5, t, 0.04);
+  audio.filt.frequency.setTargetAtTime(350 + throttle * 1100 + rpm * 0.08, t, 0.08);
+  const live = on && !muted;
+  audio.eg.gain.setTargetAtTime(live ? 0.05 + throttle * 0.06 : 0, t, 0.05);
+  audio.sg.gain.setTargetAtTime(live ? skid * 0.1 : 0, t, 0.05);
+}
+
+// Gang und Drehzahl (nur für Anzeige und Sound)
+function gearInfo() {
+  const v = Math.abs(car.vF);
+  if (car.vF < -0.5) return { gear: "R", rpm: 1500 + v * 250 };
+  const ratios = [0.2, 0.34, 0.49, 0.65, 0.82, 1.01];
+  let lo = 0;
+  for (let i = 0; i < ratios.length; i++) {
+    const hi = carSpec.top * ratios[i];
+    if (v < hi || i === ratios.length - 1) {
+      return { gear: String(i + 1), rpm: clamp(1100 + (v - lo) / (hi - lo) * 6200, 900, 7600) };
+    }
+    lo = hi * 0.72;
+  }
+}
+
+// =====================================================================
+// 12. HUD & Menüs
+// =====================================================================
+let mode = "title"; // title | drive | pause | results | garage
+let garageBack = "title";
+
+function setMode(m) {
+  mode = m;
+  $("title").classList.toggle("hidden", m !== "title");
+  $("pause").classList.toggle("hidden", m !== "pause");
+  $("results").classList.toggle("hidden", m !== "results");
+  $("garage").classList.toggle("hidden", m !== "garage");
+  $("hud").classList.toggle("hidden", m === "title" || m === "garage");
+  if (m === "pause") renderStats();
+  if (m === "garage") renderGarage();
+}
+
+function notify(text, cls) {
+  const d = document.createElement("div");
+  d.className = "note " + (cls || "");
+  d.textContent = text;
+  $("notes").appendChild(d);
+  setTimeout(() => d.remove(), 3200);
+  while ($("notes").children.length > 4) $("notes").firstChild.remove();
+}
+
+function renderStats() {
+  const rows = [
+    ["Credits", `${fmt(save.credits)} CHF`],
+    ["Skillpunkte", fmt(save.skillPoints)],
+    ["Rennen / Siege", `${save.races} / ${save.wins}`],
+    ["Bestzeit Seeland-Sprint", save.bestRace ? fmtTime(save.bestRace) : "–"],
+    ["Beste Driftzone", fmt(save.bestDrift)],
+    ...traps.map((t) => [t.name, save.traps[t.name] ? `${save.traps[t.name]} km/h` : "–"]),
+    ["Auto", carSpec.name],
+  ];
+  $("stats").innerHTML = rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("");
+}
+
+// --- Garage ---
+let garageSel = 0;
+function renderGarage() {
+  const list = $("car-list");
+  list.innerHTML = CARS.map((c, i) => {
+    const cl = carClass(c);
+    const col = "#" + c.color.toString(16).padStart(6, "0");
+    return `<div class="car-item ${i === garageSel ? "sel" : ""}" data-i="${i}">
+      <div class="swatch" style="background:${col}"></div>
+      <div class="name">${c.name}<br><small style="opacity:.7;font-weight:400">${c.kind}${c.id === carSpec.id ? " · gewählt" : ""}</small></div>
+      <div class="pi" style="background:${cl.color}">${cl.name} ${carRating(c)}</div>
+    </div>`;
+  }).join("");
+  const c = CARS[garageSel];
+  const bar = (label, v) => `<div class="bar"><span>${label}</span><div><i style="width:${clamp(v, 0.05, 1) * 100}%"></i></div></div>`;
+  $("car-bars").innerHTML =
+    bar(`Tempo ${Math.round(kmh(c.top))} km/h`, (c.top - 40) / 55) +
+    bar("Beschleunigung", (c.accel - 6) / 10) +
+    bar("Grip", (c.grip - 4) / 4.5) +
+    bar("Gelände", c.off);
+  $("car-desc").textContent = c.desc;
+  list.querySelector(".sel")?.scrollIntoView({ block: "nearest" });
+}
+$("car-list").addEventListener("click", (e) => {
+  const item = e.target.closest(".car-item");
+  if (!item) return;
+  garageSel = Number(item.dataset.i);
+  previewCar();
+});
+$("car-list").addEventListener("dblclick", () => chooseCar());
+function previewCar() {
+  setPlayerCar(CARS[garageSel]);
+  renderGarage();
+}
+function openGarage() {
+  if (race.state !== "none") { notify("Während eines Rennens geht das nicht", "red"); return; }
+  garageBack = mode === "title" ? "title" : "drive";
+  garageSel = CARS.indexOf(carSpec);
+  car.vx = car.vz = car.vF = car.vS = 0;
+  setMode("garage");
+}
+function chooseCar() {
+  setPlayerCar(CARS[garageSel]);
+  notify(`${carSpec.name} ausgewählt`, "gold");
+  setMode(garageBack === "title" ? "drive" : garageBack);
+}
+
+// --- Speedometer ---
+const speedoCtx = $("speedo").getContext("2d");
+function drawSpeedo(speed, rpm, gear) {
+  const c = speedoCtx, cx = 110, cy = 112, r = 88;
+  c.clearRect(0, 0, 220, 220);
+  c.beginPath();
+  c.arc(cx, cy, r + 10, 0, Math.PI * 2);
+  c.fillStyle = "rgba(10,15,35,0.55)";
+  c.fill();
+  const a0 = Math.PI * 0.75, a1 = Math.PI * 2.25;
+  c.lineCap = "round";
+  c.lineWidth = 10;
+  c.strokeStyle = "rgba(255,255,255,0.15)";
+  c.beginPath(); c.arc(cx, cy, r - 4, a0, a1); c.stroke();
+  const f = clamp((rpm - 800) / 6900, 0, 1);
+  c.strokeStyle = f > 0.85 ? "#ff4b4b" : "#ffd23f";
+  c.beginPath(); c.arc(cx, cy, r - 4, a0, a0 + (a1 - a0) * f); c.stroke();
+  c.fillStyle = "#fff";
+  c.textAlign = "center";
+  c.font = "italic 900 56px system-ui, sans-serif";
+  c.fillText(Math.round(speed), cx, cy + 14);
+  c.font = "700 13px system-ui, sans-serif";
+  c.fillStyle = "rgba(255,255,255,0.7)";
+  c.fillText("KM/H", cx, cy + 34);
+  c.font = "italic 900 26px system-ui, sans-serif";
+  c.fillStyle = "#19c3ff";
+  c.fillText(gear, cx, cy + 72);
+}
+
+// --- Minimap ---
+const MAP_PX = 800; // 2 m pro Pixel
+const mapImg = (() => {
+  const c = document.createElement("canvas");
+  c.width = c.height = MAP_PX;
+  const g = c.getContext("2d");
+  const img = g.createImageData(MAP_PX, MAP_PX);
+  for (let py = 0; py < MAP_PX; py++) for (let px = 0; px < MAP_PX; px++) {
+    const x = px * 2 - HALF, z = py * 2 - HALF;
+    const h = baseHeight(x, z) + detailHeight(x, z);
+    const i = (py * MAP_PX + px) * 4;
+    let col;
+    if (h < WATER) col = [40, 130, 200];
+    else if (h > 36) col = [120, 125, 110];
+    else col = [70 + h, 120 + h * 0.8, 60];
+    img.data.set([col[0], col[1], col[2], 255], i);
+  }
+  g.putImageData(img, 0, 0);
+  g.lineCap = g.lineJoin = "round";
+  for (const [w, col] of [[9, "#2a2d33"], [5, "#e9edf2"]]) {
+    g.lineWidth = w;
+    g.strokeStyle = col;
+    for (const r of roads) {
+      g.beginPath();
+      r.samples.forEach((s, i) => {
+        const x = (s.x + HALF) / 2, y = (s.z + HALF) / 2;
+        i ? g.lineTo(x, y) : g.moveTo(x, y);
+      });
+      if (r.closed) g.closePath();
+      g.stroke();
+    }
+  }
+  return c;
+})();
+const mapCtx = $("minimap").getContext("2d");
+function drawMinimap() {
+  const g = mapCtx, R = 100, scale = 0.8; // 0.8 Pixel pro Map-Pixel -> ca. 250 m Radius
+  g.save();
+  g.clearRect(0, 0, 200, 200);
+  g.beginPath(); g.arc(R, R, R, 0, Math.PI * 2); g.clip();
+  g.fillStyle = "#4a7a3a";
+  g.fillRect(0, 0, 200, 200);
+  g.translate(R, R);
+  // Karte so drehen, dass die Fahrtrichtung oben ist
+  const phi = Math.atan2(Math.cos(car.yaw), Math.sin(car.yaw));
+  g.rotate(-Math.PI / 2 - phi);
+  g.scale(scale, scale);
+  const px = (car.x + HALF) / 2, py = (car.z + HALF) / 2;
+  g.translate(-px, -py);
+  g.drawImage(mapImg, 0, 0);
+  const dot = (x, z, col, r) => {
+    g.beginPath();
+    g.arc((x + HALF) / 2, (z + HALF) / 2, r / scale, 0, Math.PI * 2);
+    g.fillStyle = col; g.fill();
+    g.lineWidth = 1.5 / scale; g.strokeStyle = "#fff"; g.stroke();
+  };
+  if (race.state === "none") dot(raceMarkerPos.x, raceMarkerPos.z, "#19a8ff", 7);
+  for (const t of traps) dot(t.x, t.z, "#8a5cff", 5);
+  dot(driftZone.ax, driftZone.az, "#ff8a00", 6);
+  if (race.state !== "none") { const cp = race.cps[race.next]; dot(cp.x, cp.z, "#ffd23f", 7); }
+  for (const ai of aiCars) dot(ai.x, ai.z, "#" + ai.spec.color.toString(16).padStart(6, "0"), 4);
+  g.restore();
+  // Spielerpfeil
+  g.fillStyle = "#ff2e88";
+  g.strokeStyle = "#fff";
+  g.lineWidth = 2;
+  g.beginPath(); g.moveTo(R, R - 9); g.lineTo(R + 7, R + 7); g.lineTo(R, R + 3); g.lineTo(R - 7, R + 7); g.closePath();
+  g.fill(); g.stroke();
+}
+
+let promptText = "";
+function updateHUD(speedKmh, gear, rpm) {
+  drawSpeedo(speedKmh, rpm, gear);
+  drawMinimap();
+  $("carname").textContent = `${carClass(carSpec).name} · ${carSpec.name}`;
+  $("location").textContent = car.surface === "water" ? "Im Wasser!" : car.roadName || "Gelände";
+  $("wallet").innerHTML = `<div class="cr">${fmt(save.credits)} CHF</div><div class="sp">${fmt(save.skillPoints)} Skillpunkte</div>`;
+
+  const ri = $("race-info");
+  if (race.state !== "none") {
+    ri.classList.remove("hidden");
+    ri.innerHTML = `<div class="pos">${racePosition()}<small>/${aiCars.length + 1}</small></div>
+      <div class="row">⏱ ${fmtTime(race.time)}</div>
+      <div class="row">Checkpoint ${race.next}/${race.cps.length - 1}</div>`;
+  } else ri.classList.add("hidden");
+
+  const cd = $("countdown");
+  if (race.state === "countdown") { cd.classList.remove("hidden"); cd.textContent = Math.ceil(race.t); }
+  else if (race.flash > 0 && race.state === "running") { cd.classList.remove("hidden"); cd.textContent = "LOS!"; }
+  else cd.classList.add("hidden");
+
+  const sk = $("skill");
+  const show = skill.active || skill.chain > 0;
+  sk.classList.toggle("hidden", !show);
+  if (show) {
+    $("skill-current").textContent = skill.active
+      ? `${skill.active.toUpperCase()} ${fmt(skill.activePts)}`
+      : skill.lastShow > 0 ? skill.lastName : "";
+    $("skill-chain").textContent = skill.chain > 0 ? `${fmt(skill.chain)} ×${skill.mult}` : "";
+    $("skill-bar").firstElementChild.style.width = `${(skill.timer / CHAIN_TIME) * 100}%`;
+  }
+
+  const pr = $("prompt");
+  pr.classList.toggle("hidden", !promptText);
+  pr.textContent = promptText;
+}
+
+// =====================================================================
+// 13. Eingabe & Spielschleife
+// =====================================================================
+const keys = {};
+addEventListener("keydown", (e) => {
+  keys[e.code] = true;
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Backspace"].includes(e.code)) e.preventDefault();
+  if (e.repeat) return;
+  initAudio();
+  if (audio && audio.ctx.state === "suspended") audio.ctx.resume();
+
+  if (mode === "title") {
+    if (e.code === "Enter") { setMode("drive"); notify("Grüezi! Willkommen beim Alpenfestival!", ""); }
+    if (e.code === "KeyG") openGarage();
+  } else if (mode === "garage") {
+    if (e.code === "ArrowUp" || e.code === "KeyW") { garageSel = (garageSel - 1 + CARS.length) % CARS.length; previewCar(); }
+    if (e.code === "ArrowDown" || e.code === "KeyS") { garageSel = (garageSel + 1) % CARS.length; previewCar(); }
+    if (e.code === "Enter") chooseCar();
+    if (e.code === "Escape") setMode(garageBack === "title" ? "title" : "drive");
+  } else if (mode === "results") {
+    if (e.code === "Enter") setMode("drive");
+  } else if (mode === "pause") {
+    if (e.code === "Escape") setMode("drive");
+    if (e.code === "KeyG") openGarage();
+    if (e.code === "Backspace") { abortRace(); setMode("drive"); }
+  } else if (mode === "drive") {
+    if (e.code === "Escape") setMode("pause");
+    if (e.code === "KeyC") cam.mode = 1 - cam.mode;
+    if (e.code === "KeyM") muted = !muted;
+    if (e.code === "KeyR" && race.state !== "countdown") resetToRoad();
+    if (e.code === "KeyG") openGarage();
+    if (e.code === "Backspace") abortRace();
+    if (e.code === "Enter" && race.state === "none" && nearRaceStart() && Math.hypot(car.vx, car.vz) < 8) startRace();
+  }
+});
+addEventListener("keyup", (e) => { keys[e.code] = false; });
+addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
+
+function nearRaceStart() {
+  return Math.hypot(car.x - raceMarkerPos.x, car.z - raceMarkerPos.z) < 12;
+}
+
+function readInput() {
+  const locked = mode !== "drive" || race.state === "countdown";
+  if (locked) return { throttle: false, brake: false, handbrake: mode !== "drive", steer: 0 };
+  return {
+    throttle: !!(keys.KeyW || keys.ArrowUp),
+    brake: !!(keys.KeyS || keys.ArrowDown),
+    handbrake: !!keys.Space,
+    steer: (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0),
+  };
+}
+
+function update(dt) {
+  const inp = readInput();
+  if (race.state === "countdown") { car.vx = car.vz = 0; }
+
+  // Lenkung weich nachführen
+  const steerSpeed = inp.steer === 0 ? 6 : 4;
+  car.steer += clamp(inp.steer - car.steer, -steerSpeed * dt, steerSpeed * dt);
+
+  // Untergrund und Hangneigung bestimmen
+  const road = nearestRoad(car.x, car.z);
+  const gh = groundHeight(car.x, car.z, road);
+  car.surface = gh < WATER - 0.3 ? "water" : road && road.dist < ROAD_W / 2 + 0.8 ? "road" : "grass";
+  car.roadName = road && road.dist < ROAD_W ? roads[road.s.road].name : "";
+  const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
+  const hf = driveHeight(car.x + fx * 1.6, car.z + fz * 1.6), hb = driveHeight(car.x - fx * 1.6, car.z - fz * 1.6);
+  const hl = driveHeight(car.x + fz * 1, car.z - fx * 1), hr = driveHeight(car.x - fz * 1, car.z + fx * 1);
+  car.slope = (hf - hb) / 3.2;
+
+  // Physik in kleinen Schritten
+  const steps = Math.ceil(dt / (1 / 120));
+  for (let i = 0; i < steps; i++) stepCar(dt / steps, inp);
+  collideCar();
+
+  // Neigung des Autos an den Boden anpassen
+  if (car.onGround) {
+    car.pitch = lerp(car.pitch, Math.atan2(hf - hb, 3.2), 1 - Math.exp(-12 * dt));
+    car.roll = lerp(car.roll, Math.atan2(hl - hr, 2), 1 - Math.exp(-12 * dt));
+  }
+  const lean = clamp(car.vS * 0.012 - car.steer * Math.abs(car.vF) * 0.0015, -0.08, 0.08);
+  playerMesh.group.position.set(car.x, car.y, car.z);
+  playerMesh.group.rotation.set(-car.pitch, car.yaw, car.roll + lean, "YXZ");
+  car.wheelSpin += car.vF * dt / playerMesh.radius;
+  for (const w of playerMesh.wheels) {
+    w.spin.rotation.x = car.wheelSpin;
+    if (w.front) w.pivot.rotation.y = car.steer * 0.45;
+  }
+  playerMesh.tail.emissiveIntensity = inp.brake && car.vF > 0.5 ? 2.5 : 0.4;
+
+  // KI, Rennen, Events, Skills
+  for (const ai of aiCars) updateAI(ai, dt, race.state === "countdown" || mode !== "drive");
+  if (mode === "drive") {
+    updateRace(dt);
+    updateEvents(dt, road);
+    updateSkills(dt);
+  }
+  skill.lastShow -= dt;
+
+  // Hinweistext
+  promptText = "";
+  if (mode === "drive" && race.state === "none" && nearRaceStart()) {
+    promptText = Math.hypot(car.vx, car.vz) < 8
+      ? "ENTER – Rennen starten: Seeland-Sprint (6 Fahrer)"
+      : "Langsamer werden, um das Rennen zu starten";
+  }
+  raceBeam.visible = race.state === "none";
+
+  // Effekte und Ton
+  const drifting = car.onGround && Math.abs(car.vS) > 3 && Math.abs(car.vF) > 5;
+  const skid = drifting ? clamp(Math.abs(car.vS) / 10, 0.2, 1) : 0;
+  const dusty = car.surface === "grass" && car.onGround && Math.hypot(car.vx, car.vz) > 10;
+  updateSmoke(dt, drifting ? skid : dusty ? 0.4 : 0, car.surface === "road" ? 0xdddddd : 0xb59a6a);
+  const gi = gearInfo();
+  updateAudio(gi.rpm, inp.throttle ? 1 : 0, car.surface === "road" ? skid : 0, mode === "drive");
+  updateCamera(dt);
+  if (mode !== "title" && mode !== "garage") updateHUD(kmh(Math.abs(car.vF)), gi.gear, gi.rpm);
+}
+
+placeCar(0, -40, -3);
+cam.yaw = car.yaw;
+cam.pos.set(car.x, car.y + 3, car.z);
+setMode("title");
+
+let last = performance.now();
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  if (mode !== "pause" && mode !== "results") update(dt);
+  else updateAudio(1000, 0, 0, false);
+  renderer.render(scene, camera);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Für Tests in der Browser-Konsole
+window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update };

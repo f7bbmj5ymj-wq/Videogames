@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alpenfestival Schweiz</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      height: 100%;
+      overflow: hidden;
+      background: #0b1020;
+      font-family: system-ui, "Segoe UI", sans-serif;
+      color: #fff;
+      user-select: none;
+    }
+    canvas { display: block; }
+    .hidden { display: none !important; }
+
+    /* ---------- HUD ---------- */
+    #minimap {
+      position: fixed; left: 20px; bottom: 20px;
+      width: 200px; height: 200px;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(255,255,255,.85), 0 6px 20px rgba(0,0,0,.4);
+    }
+    #location {
+      position: fixed; left: 20px; bottom: 228px; width: 200px;
+      text-align: center; font-weight: 700; font-size: 14px;
+      text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+    #speedo { position: fixed; right: 16px; bottom: 10px; width: 220px; height: 220px; }
+    #carname {
+      position: fixed; right: 24px; bottom: 226px;
+      font-weight: 800; font-style: italic; font-size: 15px; text-align: right;
+      text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+    #wallet {
+      position: fixed; right: 20px; top: 16px; text-align: right;
+      font-weight: 800; font-style: italic; text-shadow: 0 2px 4px rgba(0,0,0,.6);
+    }
+    #wallet .cr { font-size: 24px; color: #ffd23f; }
+    #wallet .sp { font-size: 14px; color: #ff7ad9; }
+    #race-info {
+      position: fixed; left: 20px; top: 16px;
+      font-weight: 800; font-style: italic; text-shadow: 0 2px 4px rgba(0,0,0,.6);
+    }
+    #race-info .pos { font-size: 52px; line-height: 1; }
+    #race-info .pos small { font-size: 22px; }
+    #race-info .row { font-size: 18px; margin-top: 4px; }
+    #skill {
+      position: fixed; top: 90px; left: 50%; transform: translateX(-50%);
+      text-align: center; font-weight: 900; font-style: italic;
+      text-shadow: 0 2px 6px rgba(0,0,0,.6);
+    }
+    #skill-current { font-size: 26px; color: #fff; }
+    #skill-chain { font-size: 34px; color: #ff7ad9; }
+    #skill-bar { width: 220px; height: 5px; background: rgba(255,255,255,.25); margin: 6px auto 0; border-radius: 3px; overflow: hidden; }
+    #skill-bar div { height: 100%; background: #ff7ad9; width: 0; }
+    #notes {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      pointer-events: none;
+    }
+    .note {
+      background: linear-gradient(90deg, #ff2e88, #ff8a00);
+      padding: 6px 18px; border-radius: 4px;
+      font-weight: 800; font-style: italic; font-size: 17px;
+      box-shadow: 0 4px 14px rgba(0,0,0,.35);
+      animation: note 3.2s forwards;
+    }
+    .note.blue { background: linear-gradient(90deg, #1f6fff, #19c3ff); }
+    .note.red { background: linear-gradient(90deg, #c0162b, #ff4b4b); }
+    .note.gold { background: linear-gradient(90deg, #d49b00, #ffd23f); color: #222; }
+    @keyframes note {
+      0% { opacity: 0; transform: translateY(-10px); }
+      8%, 85% { opacity: 1; transform: none; }
+      100% { opacity: 0; }
+    }
+    #prompt {
+      position: fixed; bottom: 60px; left: 50%; transform: translateX(-50%);
+      background: rgba(10,15,35,.75); border-left: 4px solid #19c3ff;
+      padding: 10px 18px; font-weight: 700; font-size: 17px; border-radius: 4px;
+    }
+    #countdown {
+      position: fixed; top: 38%; left: 50%; transform: translate(-50%, -50%);
+      font-size: 140px; font-weight: 900; font-style: italic;
+      text-shadow: 0 6px 20px rgba(0,0,0,.5);
+    }
+    #hint {
+      position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+      font-size: 13px; opacity: .75; text-shadow: 0 1px 3px rgba(0,0,0,.8);
+    }
+
+    /* ---------- Menüs ---------- */
+    .overlay {
+      position: fixed; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      background: rgba(5,10,25,.55);
+    }
+    .panel {
+      background: rgba(12,18,40,.92);
+      border-top: 5px solid #ff2e88;
+      padding: 28px 36px; border-radius: 8px;
+      max-width: 640px; width: calc(100% - 32px);
+      max-height: calc(100% - 32px); overflow-y: auto;
+      box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    h1 {
+      margin: 0 0 4px; font-size: 46px; font-style: italic; font-weight: 900;
+      background: linear-gradient(90deg, #ff2e88, #ff8a00, #ffd23f);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    h2 { margin: 0 0 14px; font-style: italic; }
+    .sub { opacity: .8; margin-bottom: 18px; }
+    table { border-collapse: collapse; width: 100%; }
+    td { padding: 4px 8px; }
+    td:first-child { color: #ffd23f; font-weight: 700; white-space: nowrap; }
+    .go { margin-top: 20px; font-size: 20px; font-weight: 800; color: #ffd23f; text-align: center; }
+    .stats td:first-child { color: #9fb3ff; }
+    .results tr.me td { background: rgba(255,46,136,.3); }
+
+    /* ---------- Garage ---------- */
+    #garage { background: none; justify-content: flex-start; align-items: stretch; }
+    #garage .panel {
+      width: 380px; max-width: calc(100% - 32px); margin: 16px; border-top-color: #ffd23f;
+      display: flex; flex-direction: column;
+    }
+    #car-list { overflow-y: auto; flex: 1; margin: 0 -8px; padding: 0 8px; }
+    .car-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 10px; margin-bottom: 4px; border-radius: 4px; cursor: pointer;
+      background: rgba(255,255,255,.05);
+    }
+    .car-item.sel { background: rgba(255,210,63,.25); outline: 2px solid #ffd23f; }
+    .car-item .swatch { width: 18px; height: 18px; border-radius: 50%; flex: none; border: 2px solid rgba(255,255,255,.6); }
+    .car-item .name { flex: 1; font-weight: 700; }
+    .pi { font-weight: 900; font-size: 12px; padding: 2px 6px; border-radius: 3px; color: #111; }
+    .bars { margin: 14px 0 6px; }
+    .bar { display: flex; align-items: center; gap: 8px; font-size: 13px; margin: 4px 0; }
+    .bar span { width: 110px; opacity: .8; }
+    .bar div { flex: 1; height: 8px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: linear-gradient(90deg, #ff8a00, #ffd23f); }
+    #car-desc { font-size: 14px; opacity: .85; min-height: 40px; }
+  </style>
+</head>
+<body>
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <canvas id="minimap" width="200" height="200"></canvas>
+    <div id="location"></div>
+    <canvas id="speedo" width="220" height="220"></canvas>
+    <div id="carname"></div>
+    <div id="wallet"></div>
+    <div id="race-info" class="hidden"></div>
+    <div id="skill" class="hidden">
+      <div id="skill-current"></div>
+      <div id="skill-chain"></div>
+      <div id="skill-bar"><div></div></div>
+    </div>
+    <div id="prompt" class="hidden"></div>
+    <div id="countdown" class="hidden"></div>
+    <div id="hint">Esc: Menü · G: Garage · C: Kamera · R: Zurück auf die Strasse · M: Ton</div>
+  </div>
+  <div id="notes"></div>
+
+  <!-- Titelbild -->
+  <div id="title" class="overlay">
+    <div class="panel">
+      <h1>ALPENFESTIVAL</h1>
+      <div class="sub">🇨🇭 Schweiz · Fahre durch Alpen, Seen und Dörfer – wohin du willst!</div>
+      <table>
+        <tr><td>W / ↑</td><td>Gas</td></tr>
+        <tr><td>S / ↓</td><td>Bremse / Rückwärts</td></tr>
+        <tr><td>A D / ← →</td><td>Lenken</td></tr>
+        <tr><td>Leertaste</td><td>Handbremse (driften!)</td></tr>
+        <tr><td>G</td><td>Garage (11 Autos, z. B. Porsche 911 Dakar)</td></tr>
+        <tr><td>C</td><td>Kamera wechseln</td></tr>
+        <tr><td>R</td><td>Zurück auf die Strasse</td></tr>
+        <tr><td>Enter</td><td>Event starten (im blauen Lichtstrahl)</td></tr>
+        <tr><td>Esc</td><td>Pause &amp; Statistik</td></tr>
+      </table>
+      <div class="go">Enter drücken zum Losfahren · G für die Garage</div>
+    </div>
+  </div>
+
+  <!-- Pause -->
+  <div id="pause" class="overlay hidden">
+    <div class="panel">
+      <h2>Pause</h2>
+      <table class="stats" id="stats"></table>
+      <div class="sub" style="margin-top:16px">
+        Blauer Lichtstrahl = Rennen · Orange Tore = Driftzone · Lila Kameras = Blitzer<br>
+        Skill-Ketten: Driften, Springen, Rasen und knapp an Autos vorbeifahren. Nicht crashen!
+      </div>
+      <div class="go">Esc: Weiterfahren · G: Garage · Backspace: Rennen abbrechen</div>
+    </div>
+  </div>
+
+  <!-- Rennergebnis -->
+  <div id="results" class="overlay hidden">
+    <div class="panel">
+      <h2 id="results-title">Ergebnis</h2>
+      <table class="results" id="results-table"></table>
+      <div class="sub" id="results-reward" style="margin-top:14px"></div>
+      <div class="go">Enter: Weiter</div>
+    </div>
+  </div>
+
+  <!-- Garage -->
+  <div id="garage" class="overlay hidden">
+    <div class="panel">
+      <h2>Garage</h2>
+      <div id="car-list"></div>
+      <div class="bars" id="car-bars"></div>
+      <div id="car-desc"></div>
+      <div class="go" style="font-size:15px">↑ ↓ auswählen · Enter fahren · Esc zurück</div>
+    </div>
+  </div>
+
+  <script src="../lib/three.min.js"></script>
+  <script src="cars.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
