@@ -1512,6 +1512,13 @@ addEventListener("keydown", (e) => {
   }
 });
 addEventListener("keyup", (e) => { keys[e.code] = false; });
+// Klick auf das Titelbild startet ebenfalls (und gibt dem Spiel den Tastatur-Fokus)
+$("title").addEventListener("click", () => {
+  window.focus();
+  initAudio();
+  setMode("drive");
+  notify("Grüezi! Willkommen beim Alpenfestival!", "");
+});
 addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
 function nearRaceStart() {
