@@ -432,18 +432,21 @@ function makeCarMesh(spec) {
     const cabW = b.w * 0.86;
     extrude(cab, cabW, paint, 0.06, true);
     // Glasstreifen, der einem Stück der Kurve folgt (Windschutz- und Heckscheibe)
+    // (die abgerundeten Kanten machen die Kabine ca. 5 cm dicker als ihren Umriss,
+    //  deshalb liegt das Glas 3,5–6,5 cm über der Kurve)
     const glassAlong = (curve, t0, t1, width) => {
       const pts = [], n = 16;
       for (let i = 0; i <= n; i++) pts.push(curve.getPoint(t0 + (t1 - t0) * i / n));
-      const sh = new THREE.Shape();
-      const out = pts.map((p, i) => {
+      const off = (d) => pts.map((p, i) => {
         const q = pts[Math.min(n, i + 1)], o = pts[Math.max(0, i - 1)];
         const dz = q.x - o.x, dy = q.y - o.y, l = Math.hypot(dz, dy) || 1;
-        return V(p.x - dy / l * 0.014, p.y + dz / l * 0.014);
+        return V(p.x + dy / l * d, p.y - dz / l * d);   // nach aussen versetzt
       });
-      sh.moveTo(pts[0].x, pts[0].y);
-      for (const p of pts.slice(1)) sh.lineTo(p.x, p.y);
-      for (const p of out.reverse()) sh.lineTo(p.x, p.y);
+      const inner = off(0.035), outer = off(0.065);
+      const sh = new THREE.Shape();
+      sh.moveTo(inner[0].x, inner[0].y);
+      for (const p of inner.slice(1)) sh.lineTo(p.x, p.y);
+      for (const p of outer.reverse()) sh.lineTo(p.x, p.y);
       sh.closePath();
       extrude(sh, width, glass, 0.01, true);
     };
