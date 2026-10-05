@@ -23,20 +23,24 @@ const CARS = [
     accent: 0x1c5bd6,
     desc: "Höhergelegter 911 mit Dachträger und Zusatzscheinwerfern. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.9, l: 4.5, h: 0.62, ride: 0.5, ch: 0.5, cl: 1.9, cz: -0.35, wr: 0.43, ww: 0.36, wb: 2.45,
+    body: { w: 1.82, l: 4.53, h: 0.62, ride: 0.5, ch: 0.5, cl: 1.6, cz: -0.25, wr: 0.43, ww: 0.36, wb: 2.45,
+      humps: 0.13, flareF: 0.03, flareR: 0.075,   // 911: Kotflügel vorne höher als die Haube, breite "Hüften" hinten
       extras: ["fastback", "rack", "lightbar", "cladding", "roundLights", "stripe", "ducktail"] },
   },
   {
     id: "impreza22b",
     name: "Subaru Impreza 22B STi",
     kind: "Rallye-Legende",
-    color: 0x1b3fa0,
-    accent: 0x1b3fa0,
-    rim: 0xc9a23a,
+    color: 0x1d3b8f,          // "Sonic Blue Mica"
+    accent: 0x1d3b8f,
+    rim: 0xc9a23a,            // goldene Felgen
+    spokes: 8,                // viele feine Speichen
+    caliper: 0xc0262d,        // rote Bremssättel
     desc: "Die Rallye-Legende von 1998: Allradantrieb, breite Kotflügel, goldene Felgen und grosser Heckflügel. Auf Schotter und Gras kaum zu schlagen.",
     top: 69, accel: 13.6, grip: 6.8, off: 0.9,
-    body: { w: 1.92, l: 4.35, h: 0.6, ride: 0.27, ch: 0.52, cl: 1.85, cz: -0.25, wr: 0.36, ww: 0.32, wb: 2.52, rake: 1.5,
-      extras: ["wing", "hoodScoop", "flares", "fogLights"] },
+    body: { w: 1.64, l: 4.37, h: 0.58, ride: 0.2, ch: 0.56, cl: 1.3, cz: -0.28, wr: 0.315, ww: 0.25, wb: 2.52, rake: 1.6, rrake: 1.25,
+      flareF: 0.085, flareR: 0.085,              // stark ausgestellte Kotflügel
+      extras: ["tallWing", "hoodScoop", "fogLights", "airDam", "rectLights", "mudflaps", "exhaust", "badge22b", "skirts"] },
   },
   {
     id: "falke",
@@ -278,8 +282,33 @@ function makeCarMesh(spec) {
     return m;
   };
   const box = (w, h, l, mat, x, y, z) => add(new THREE.BoxGeometry(w, h, l), mat, x, y, z);
+  const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
+  const flareF = b.flareF ?? 0.02, flareR = b.flareR ?? 0.02;
+  // Formt die gerade gezogene Karosserie wie ein echtes Auto um
+  const deform = (geo) => {
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      let x = p.getX(i), y = p.getY(i);
+      const z = p.getZ(i), az = Math.abs(z) / L;
+      // Draufsicht: vorne und hinten abgerundete Ecken
+      let k = 1 - 0.14 * smooth(0.5, 1.03, az) ** 2;
+      // Fensterbereich wird nach oben schmaler
+      k *= 1 - Math.min(1.3, Math.max(0, (y - y1) / Math.max(b.ch, 0.1))) * 0.14;
+      // Kotflügel über den Rädern nach aussen wölben
+      const low = smooth(y1 + 0.04, y1 - 0.2, y);
+      k += flareF * Math.exp(-(((z - b.wb / 2) / 0.75) ** 2)) * low;
+      k += flareR * Math.exp(-(((z + b.wb / 2) / 0.75) ** 2)) * low;
+      x *= k;
+      // 911: vordere Kotflügel liegen höher als die Motorhaube
+      if (b.humps) {
+        y += b.humps * smooth(0.16, 0.36, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
+          * smooth(y1 - 0.35, y1 - 0.02, y) * smooth(L + 0.1, L - 0.35, z) * (y < y1 + 0.02 ? 1 : 0);
+      }
+      p.setXYZ(i, x, y, z);
+    }
+  };
   // Seitenprofil (u = Länge, v = Höhe) in die Breite ziehen und Kanten abrunden
-  const extrude = (shape, width, mat, bevel) => {
+  const extrude = (shape, width, mat, bevel, shapeIt = false) => {
     const t = Math.min(bevel, width / 4);
     const geo = new THREE.ExtrudeGeometry(shape, {
       depth: Math.max(0.01, width - 2 * t), bevelEnabled: t > 0, bevelThickness: t,
@@ -287,6 +316,7 @@ function makeCarMesh(spec) {
     });
     geo.translate(0, 0, -(width - 2 * t) / 2);
     geo.rotateY(-Math.PI / 2);
+    if (shapeIt) deform(geo);
     smoothNormals(geo);
     return add(geo, mat);
   };
@@ -299,7 +329,7 @@ function makeCarMesh(spec) {
   const ar = b.wr + 0.07;                              // Radius der Radläufe
   const cf = b.cz + b.cl / 2, cr = b.cz - b.cl / 2;    // Dach vorne / hinten
   const zf = Math.min(L - 0.7, cf + b.ch * (b.rake ?? 1.25)); // Fuss der Windschutzscheibe (rake = wie flach sie ist)
-  const zr = ex.has("fastback") ? -L + 0.4 : Math.max(-L + 0.3, cr - b.ch * 0.6);
+  const zr = ex.has("fastback") ? -L + 0.4 : Math.max(-L + 0.3, cr - b.ch * (b.rrake ?? 0.6));
 
   // --- Karosserie ---
   const s = new THREE.Shape();
@@ -325,7 +355,7 @@ function makeCarMesh(spec) {
     s.quadraticCurveTo(-L, y1, -L, y1 - 0.2);
   }
   s.closePath();
-  extrude(s, b.w, paint, 0.1);
+  extrude(s, b.w, paint, 0.1, true);
 
   // --- Fahrgastzelle ---
   if (ex.has("convertible")) {
@@ -340,10 +370,10 @@ function makeCarMesh(spec) {
     g.lineTo(zf, y1 - 0.04);
     g.lineTo(cf + 0.06, y1 + ch - 0.06);
     g.quadraticCurveTo(cf, y1 + ch, cf - 0.12, y1 + ch);
-    g.lineTo(cr + 0.12, y1 + ch);
+    g.quadraticCurveTo((cf + cr) / 2, y1 + ch + 0.03, cr + 0.12, y1 + ch);   // leicht gewölbtes Dach
     g.quadraticCurveTo(cr, y1 + ch, cr - 0.06, y1 + ch - 0.06);
     g.closePath();
-    extrude(g, b.w * 0.86, glass, 0.07);
+    extrude(g, b.w * 0.86, glass, 0.07, true);
     // Dach
     const r = new THREE.Shape();
     r.moveTo(cr - 0.02, y1 + ch - 0.03);
@@ -351,27 +381,38 @@ function makeCarMesh(spec) {
     r.quadraticCurveTo(cf, y1 + ch + 0.05, cf - 0.15, y1 + ch + 0.05);
     r.lineTo(cr + 0.15, y1 + ch + 0.05);
     r.quadraticCurveTo(cr, y1 + ch + 0.05, cr - 0.02, y1 + ch - 0.03);
-    extrude(r, b.w * 0.88, paint, 0.05);
-    // Säulen (A vorne, C hinten, B in der Mitte) – trennen die Scheiben optisch
-    const pillar = (z0, z1, x) => {
-      const len = Math.hypot(z1 - z0, ch);
-      const p = box(0.07, 0.06, len, paint, x, y1 + ch / 2, (z0 + z1) / 2);
-      p.rotation.x = -Math.atan2(ch, z1 - z0);
-      return p;
-    };
+    extrude(r, b.w * 0.88, paint, 0.05, true);
+    // Mittelsäule (B-Säule), passend zum nach oben schmaler werdenden Fensterbereich
     for (const sx of [-1, 1]) {
-      const x = sx * b.w * 0.435;
-      pillar(zf, cf, x);
-      pillar(zr, cr, x);
-      if (b.cl > 1.5) box(0.07, ch, 0.12, paint, x, y1 + ch / 2, b.cz + 0.05);
+      if (b.cl > 1.2) {
+        const bp = box(0.06, ch * 0.98, 0.1, paint, sx * b.w * 0.43 * 0.93, y1 + ch / 2, b.cz + 0.05);
+        bp.rotation.z = sx * 0.13;
+      }
     }
   }
 
-  // --- Details: Spiegel, Grill, Stossstangen, Nummernschilder ---
+  // --- Details: Spiegel, Türfugen, Grill, Stossstangen, Nummernschilder ---
+  const seam = new THREE.MeshStandardMaterial({ color: 0x0a0b0d, roughness: 0.8 });
   for (const sx of [-1, 1]) {
     box(0.16, 0.1, 0.2, paint, sx * (b.w / 2 + 0.08), y1 + 0.1, zf - 0.2);
+    if (!ex.has("convertible")) {
+      const doorF = zf - 0.12, doorR = Math.max(cr + 0.1, doorF - 1.25);
+      for (const z of [doorF, doorR]) box(0.012, y1 - y0 - 0.2, 0.012, seam, sx * (b.w / 2 + 0.002), y0 + (y1 - y0) / 2 + 0.05, z);
+      box(0.025, 0.035, 0.16, chrome, sx * (b.w / 2 + 0.01), y1 - 0.12, doorR + 0.22);   // Türgriff
+    }
   }
-  box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, L + 0.07);           // Kühlergrill
+  if (ex.has("airDam")) {
+    // grosser Frontspoiler mit Lufteinlass (Rallye-Look)
+    box(b.w * 0.6, 0.15, 0.06, trim, 0, y0 + 0.2, L + 0.06);
+    for (const sx of [-1, 1]) box(0.22, 0.1, 0.06, trim, sx * b.w * 0.36, y0 + 0.08, L + 0.05);
+    box(b.w * 0.42, 0.07, 0.05, trim, 0, y0 + 0.38, L + 0.04);          // kleiner Grill oben
+  } else if (b.humps) {
+    // 911: kein Kühlergrill (Motor hinten), nur drei Lufteinlässe unten
+    box(b.w * 0.34, 0.09, 0.04, trim, 0, y0 + 0.17, L + 0.06);
+    for (const sx of [-1, 1]) box(b.w * 0.2, 0.08, 0.04, trim, sx * b.w * 0.33, y0 + 0.17, L + 0.04);
+  } else {
+    box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, L + 0.07);         // Kühlergrill
+  }
   box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);          // Frontlippe
   box(b.w * 0.9, 0.1, 0.25, trim, 0, y0 + 0.06, -L + 0.1);            // Diffusor
   box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, L + 0.08);
@@ -380,10 +421,20 @@ function makeCarMesh(spec) {
   // Scheinwerfer und Rücklichter
   for (const sx of [-1, 1]) {
     if (ex.has("roundLights")) {
-      const l = add(new THREE.CylinderGeometry(0.15, 0.15, 0.2, 20), head, sx * b.w * 0.32, noseY - 0.04, L - 0.06);
-      l.rotation.x = Math.PI / 2 - 0.25;
-      const ring = add(new THREE.TorusGeometry(0.155, 0.025, 8, 24), chrome, sx * b.w * 0.32, noseY - 0.02, L + 0.03);
-      ring.rotation.x = -0.25;
+      // grosse, runde Scheinwerfer vorne in den Kotflügeln (beim 911 typisch "Froschaugen")
+      const hr = b.humps ? 0.17 : 0.15, tilt = b.humps ? 0.5 : 0.3;
+      const hy = noseY - 0.02 + (b.humps || 0) * 0.3, hx = sx * b.w * 0.33, hz = L - (b.humps ? 0.12 : 0.08);
+      const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
+      l.rotation.x = Math.PI / 2 - tilt;
+      const ring = add(new THREE.TorusGeometry(hr + 0.005, 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
+      ring.rotation.x = -tilt;
+    } else if (ex.has("rectLights")) {
+      // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
+      const hl = box(0.46, 0.14, 0.1, head, sx * b.w * 0.31, noseY - 0.1, L - 0.01);
+      hl.rotation.y = sx * 0.28;
+      box(0.5, 0.17, 0.06, trim, sx * b.w * 0.31, noseY - 0.1, L - 0.06).rotation.y = sx * 0.28;
+      const blink = new THREE.MeshStandardMaterial({ color: 0xff9a1a, emissive: 0xff7a00, emissiveIntensity: 0.4 });
+      box(0.12, 0.06, 0.08, blink, sx * b.w * 0.47, noseY - 0.2, L - 0.12).rotation.y = sx * 0.6;
     } else {
       box(0.42, 0.1, 0.12, head, sx * b.w * 0.32, noseY - 0.12, L + 0.03);
     }
@@ -395,13 +446,49 @@ function makeCarMesh(spec) {
   const ch = ex.has("convertible") ? 0 : b.ch;
   if (ex.has("ducktail")) box(b.w * 0.8, 0.06, 0.4, paint, 0, y1 + 0.02, -L + 0.3).rotation.x = 0.25;
   if (ex.has("spoiler")) box(b.w * 0.88, 0.05, 0.32, paint, 0, y1 + 0.06, -L + 0.2).rotation.x = 0.12;
-  if (ex.has("wing")) {
-    box(b.w * 0.95, 0.05, 0.42, accent, 0, top + 0.42, -L + 0.3).rotation.x = 0.1;
+  // Echter Heckflügel: Flügelprofil (runde Vorderkante, dünne Hinterkante),
+  // schräge Stützen, abgerundete Endplatten und eine kleine Abrisskante.
+  const buildWing = (height, chord, span, mat, standMat) => {
+    const wz = -L + 0.08 + chord * 0.6;          // Mitte des Flügels über dem Kofferraum
+    const wy = y1 + height;
+    // Profil im Seitenschnitt (u = vorne/hinten, v = oben/unten), Vorderkante zeigt nach vorne (+u)
+    const t = chord * 0.13;
+    const af = new THREE.Shape();
+    af.moveTo(-chord / 2, 0);                                            // Hinterkante
+    af.bezierCurveTo(-chord * 0.1, t * 0.9, chord * 0.3, t * 1.1, chord / 2, t * 0.25); // Oberseite
+    af.quadraticCurveTo(chord / 2 + t * 0.35, -t * 0.25, chord * 0.42, -t * 0.4);       // runde Nase
+    af.bezierCurveTo(chord * 0.2, -t * 0.55, -chord * 0.15, -t * 0.2, -chord / 2, 0);   // Unterseite
+    const blade = extrude(af, span, mat, 0.012);
+    blade.position.set(0, wy, wz);
+    blade.rotation.x = 0.14;                       // Anstellwinkel: hinten höher
+    // Abrisskante (Gurney-Flap) an der Hinterkante
+    const gf = box(span * 0.98, 0.03, 0.008, mat, 0, wy + 0.06 * chord + 0.012, wz - chord / 2 + 0.01);
+    gf.rotation.x = 0.14;
+    // Stützen: schräg nach hinten, oben schmaler
+    const st = new THREE.Shape();
+    st.moveTo(0.12, 0);
+    st.lineTo(-0.1, 0);
+    st.lineTo(-0.06, height - 0.01);
+    st.quadraticCurveTo(0.0, height + 0.02, 0.05, height - 0.01);
+    st.closePath();
     for (const sx of [-1, 1]) {
-      box(0.06, 0.4, 0.2, trim, sx * b.w * 0.3, top + 0.2, -L + 0.3);
-      box(0.03, 0.18, 0.46, accent, sx * b.w * 0.48, top + 0.44, -L + 0.3);
+      extrude(st, 0.035, standMat, 0.008).position.set(sx * span * 0.33, y1 - 0.01, wz + 0.01);
+      // Endplatte
+      const ep = new THREE.Shape();
+      const el = chord * 1.15, eh = 0.15;
+      ep.moveTo(-el / 2, -eh * 0.45);
+      ep.lineTo(el / 2 - 0.05, -eh * 0.45);
+      ep.quadraticCurveTo(el / 2, -eh * 0.45, el / 2, -eh * 0.2);
+      ep.lineTo(el / 2 - 0.06, eh * 0.4);
+      ep.lineTo(-el / 2 + 0.03, eh * 0.55);
+      ep.quadraticCurveTo(-el / 2, eh * 0.55, -el / 2, eh * 0.4);
+      ep.closePath();
+      const plate = extrude(ep, 0.014, mat, 0.004);
+      plate.position.set(sx * (span / 2 + 0.008), wy + 0.01, wz);
     }
-  }
+  };
+  if (ex.has("tallWing")) buildWing(0.34, 0.3, b.w * 0.9, accent, accent);   // 22B: hoch, in Wagenfarbe
+  else if (ex.has("wing")) buildWing(0.4, 0.38, b.w * 0.95, accent, trim);
   if (ex.has("rack")) {
     const ry = top + ch + 0.16;
     for (const sx of [-1, 1]) box(0.05, 0.05, b.cl * 0.85, trim, sx * b.w * 0.38, ry, b.cz);
@@ -420,7 +507,8 @@ function makeCarMesh(spec) {
   if (ex.has("cladding")) {
     // schwarze Radlauf-Verbreiterungen und Seitenschweller
     for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
-      const f = add(new THREE.TorusGeometry(ar + 0.02, 0.07, 6, 18, Math.PI), trim, sx * (b.w / 2 + 0.03), b.wr, cz);
+      const fl = cz > 0 ? flareF : flareR;
+      const f = add(new THREE.TorusGeometry(ar + 0.02, 0.07, 6, 18, Math.PI), trim, sx * (b.w / 2 * (1 + fl) + 0.02), b.wr, cz);
       f.rotation.y = Math.PI / 2;
     }
     for (const sx of [-1, 1]) box(0.08, 0.14, b.wb - 2 * ar - 0.1, trim, sx * (b.w / 2 + 0.02), y0 + 0.1, 0);
@@ -433,11 +521,59 @@ function makeCarMesh(spec) {
       f.scale.set(1, 1, 0.8);
     }
   }
+  if (ex.has("boxFlares")) {
+    // eckig ausgestellte Kotflügel: ein Blech mit Radausschnitt, aussen auf die Karosserie gesetzt
+    for (const cz of [-b.wb / 2, b.wb / 2]) {
+      const fr = ar + 0.02;
+      const x0 = cz - fr - 0.3, x1 = cz + fr + 0.3, yb = y0 + 0.05, yt = Math.min(y1 - 0.07, b.wr + fr + 0.1);
+      const fs = new THREE.Shape();
+      fs.moveTo(x0, yb);
+      fs.lineTo(x0, yt - 0.12);
+      fs.quadraticCurveTo(x0, yt, x0 + 0.2, yt);
+      fs.lineTo(x1 - 0.2, yt);
+      fs.quadraticCurveTo(x1, yt, x1, yt - 0.12);
+      fs.lineTo(x1, yb);
+      const a = Math.asin(Math.min(0.9, Math.max(0, (yb - b.wr) / fr)));
+      fs.lineTo(cz + fr * Math.cos(a), yb);
+      fs.absarc(cz, b.wr, fr, a, Math.PI - a, false);
+      fs.closePath();
+      for (const sx of [-1, 1]) extrude(fs, 0.18, paint, 0.06).position.x = sx * (b.w / 2 + 0.01);
+    }
+  }
+  if (ex.has("skirts")) {
+    for (const sx of [-1, 1]) box(0.08, 0.1, b.wb - 2 * ar - 0.3, paint, sx * (b.w / 2 + 0.02), y0 + 0.07, 0);
+  }
   if (ex.has("hoodScoop")) {
-    // Lufthutze auf der Motorhaube
-    const zs = zf + (L - zf) * 0.3;
-    box(0.62, 0.1, 0.5, paint, 0, y1 - 0.01, zs).rotation.x = 0.06;
-    box(0.5, 0.06, 0.04, trim, 0, y1 + 0.01, zs + 0.25);
+    // Lufthutze auf der Motorhaube, vorne offen
+    const zs = zf + (L - zf) * 0.32;
+    const sc = box(0.72, 0.11, 0.56, paint, 0, y1 - 0.0, zs);
+    sc.rotation.x = 0.07;
+    box(0.6, 0.075, 0.03, seam, 0, y1 + 0.015, zs + 0.27);
+  }
+  if (ex.has("mudflaps")) {
+    for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
+      box(b.ww + 0.04, 0.24, 0.012, seam, sx * (b.w / 2 - b.ww / 2 + 0.1), y0 + 0.02, cz - ar - 0.04);
+    }
+  }
+  if (ex.has("exhaust")) {
+    const ex1 = add(new THREE.CylinderGeometry(0.055, 0.06, 0.2, 18), chrome, b.w * 0.3, y0 + 0.12, -L - 0.04);
+    ex1.rotation.x = Math.PI / 2;
+    const ex2 = add(new THREE.CylinderGeometry(0.045, 0.045, 0.21, 18), seam, b.w * 0.3, y0 + 0.12, -L - 0.04);
+    ex2.rotation.x = Math.PI / 2;
+  }
+  if (ex.has("badge22b")) {
+    const c = document.createElement("canvas");
+    c.width = 256; c.height = 64;
+    const g = c.getContext("2d");
+    g.font = "italic 900 44px system-ui, sans-serif";
+    g.fillStyle = "#e8e8e8"; g.fillText("22B", 18, 48);
+    g.fillStyle = "#ff3d8b"; g.fillText("STi", 128, 48);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const badge = add(new THREE.PlaneGeometry(0.34, 0.085), new THREE.MeshStandardMaterial({ map: t, transparent: true, metalness: 0.6, roughness: 0.3 }),
+      -b.w * 0.25, y1 - 0.08, -L - 0.065);
+    badge.rotation.y = Math.PI;
+    badge.castShadow = false;
   }
   if (ex.has("fogLights")) {
     for (const sx of [-1, 1]) {
@@ -468,25 +604,48 @@ function makeCarMesh(spec) {
   if (b.drop) for (const part of group.children) part.position.y -= b.drop;
 
   // --- Räder: pivot (lenkt) -> spin (dreht sich) -> Reifen + Felge ---
-  const tireGeo = new THREE.CylinderGeometry(b.wr, b.wr, b.ww, 32);
+  // Reifen mit runden Flanken: ein Querschnitt, der um die Achse gedreht wird
+  const R = b.wr, W = b.ww / 2, rIn = R * 0.66;
+  const tireGeo = new THREE.LatheGeometry([
+    new THREE.Vector2(rIn, -W), new THREE.Vector2(R - 0.05, -W), new THREE.Vector2(R - 0.015, -W + 0.02),
+    new THREE.Vector2(R, -W + 0.05), new THREE.Vector2(R, W - 0.05), new THREE.Vector2(R - 0.015, W - 0.02),
+    new THREE.Vector2(R - 0.05, W), new THREE.Vector2(rIn, W),
+  ], 40);
   tireGeo.rotateZ(Math.PI / 2);
-  const barrelGeo = new THREE.CylinderGeometry(b.wr * 0.66, b.wr * 0.66, b.ww + 0.006, 24);
+  const barrelGeo = new THREE.CylinderGeometry(rIn, rIn, b.ww + 0.006, 24, 1, true);
   barrelGeo.rotateZ(Math.PI / 2);
-  const spokeGeo = new THREE.BoxGeometry(0.03, b.wr * 1.26, 0.07);
+  const lipGeo = new THREE.TorusGeometry(rIn - 0.01, 0.014, 6, 32);
+  lipGeo.rotateY(Math.PI / 2);
+  const discGeo = new THREE.CylinderGeometry(rIn * 0.85, rIn * 0.85, 0.025, 28);
+  discGeo.rotateZ(Math.PI / 2);
+  const caliperGeo = new THREE.BoxGeometry(0.07, rIn * 0.55, rIn * 0.75);
+  const nSpokes = spec.spokes || 5;
+  const spokeGeo = new THREE.BoxGeometry(0.03, rIn * 1.9, nSpokes > 5 ? 0.038 : 0.07);
   const hubGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.04, 12);
   hubGeo.rotateZ(Math.PI / 2);
   const tireMat = new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.92 });
-  const barrelMat = new THREE.MeshStandardMaterial({ color: 0x2a2d31, metalness: 0.6, roughness: 0.5 });
+  const barrelMat = new THREE.MeshStandardMaterial({ color: 0x2a2d31, metalness: 0.6, roughness: 0.5, side: THREE.DoubleSide });
+  const discMat = new THREE.MeshStandardMaterial({ color: 0x7d8288, metalness: 0.9, roughness: 0.35 });
+  const caliperMat = new THREE.MeshStandardMaterial({ color: spec.caliper ?? 0x3a3d42, metalness: 0.3, roughness: 0.45 });
   const wheels = [];
   for (const sz of [1, -1]) for (const sx of [-1, 1]) {
     const pivot = new THREE.Group();
-    pivot.position.set(sx * (b.w / 2 - b.ww / 2 + 0.04), b.wr, sz * b.wb / 2);
+    const axleOut = (b.w / 2) * Math.max(0, (sz > 0 ? flareF : flareR) - 0.02) * 0.9;
+    pivot.position.set(sx * (b.w / 2 - b.ww / 2 + 0.04 + axleOut), b.wr, sz * b.wb / 2);
+    // Bremssattel dreht sich nicht mit, er sitzt fest am Radträger
+    const caliper = new THREE.Mesh(caliperGeo, caliperMat);
+    caliper.position.set(sx * (b.ww / 2 - 0.07), rIn * 0.42, -rIn * 0.3 * sz);
+    pivot.add(caliper);
     const spin = new THREE.Group();
-    const parts = [new THREE.Mesh(tireGeo, tireMat), new THREE.Mesh(barrelGeo, barrelMat)];
-    for (let k = 0; k < 5; k++) {
+    const disc = new THREE.Mesh(discGeo, discMat);
+    disc.position.x = sx * (b.ww / 2 - 0.11);
+    const lip = new THREE.Mesh(lipGeo, rimMat);
+    lip.position.x = sx * (b.ww / 2);
+    const parts = [new THREE.Mesh(tireGeo, tireMat), new THREE.Mesh(barrelGeo, barrelMat), disc, lip];
+    for (let k = 0; k < nSpokes; k++) {
       const sp = new THREE.Mesh(spokeGeo, rimMat);
-      sp.rotation.x = (k / 5) * Math.PI;
-      sp.position.x = sx * (b.ww / 2 - 0.005);
+      sp.rotation.x = (k / nSpokes) * Math.PI;
+      sp.position.x = sx * (b.ww / 2 - 0.02);
       parts.push(sp);
     }
     const hub = new THREE.Mesh(hubGeo, rimMat);
