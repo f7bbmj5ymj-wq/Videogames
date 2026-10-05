@@ -257,8 +257,9 @@ function makeCarMesh(spec) {
   s.lineTo(L - 0.22, y0);
   s.quadraticCurveTo(L, y0, L, y0 + 0.16);
   s.lineTo(L, noseY - 0.12);
-  s.quadraticCurveTo(L, noseY, L - 0.28, noseY + 0.03);
-  s.quadraticCurveTo((L + zf) / 2, y1 - 0.02, zf, y1);              // Motorhaube
+  // Nase + Motorhaube als EINE Kurve: beginnt senkrecht an der Front und läuft
+  // flach in die Windschutzscheibe aus – so gibt es keinen Knick.
+  s.bezierCurveTo(L, noseY + 0.1, L - (L - zf) * 0.45, y1, zf, y1);
   if (ex.has("fastback")) {
     s.lineTo(-L + 0.3, y1 - 0.05);
     s.quadraticCurveTo(-L, y1 - 0.08, -L, y1 - 0.25);

@@ -1849,4 +1849,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Für Tests in der Browser-Konsole
-window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update };
+window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam };
