@@ -26,11 +26,11 @@ const CARS = [
     offroadTires: true,       // grobstollige Geländereifen
     desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.45, cl: 1.15, cz: -0.25, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
+    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.45, cl: 1.1, cz: -0.5, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
       axleOff: 0.1, haunch: 0.08,                  // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
-      humps: 0.12, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne höher als die Haube, "Hüften" hinten
+      humps: 0.17, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
       extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
@@ -349,7 +349,7 @@ function makeCarMesh(spec) {
       }
       // 911: vordere Kotflügel liegen höher als die Motorhaube
       if (b.humps) {
-        y += b.humps * smooth(0.16, 0.36, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
+        y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
           * smooth(y1 - 0.35, y1 - 0.02, y) * smooth(L + 0.1, L - 0.35, z) * (y < y1 + 0.02 ? 1 : 0);
       }
       p.setXYZ(i, x, y, z);
@@ -486,7 +486,7 @@ function makeCarMesh(spec) {
       sh.closePath();
       extrude(sh, width, glass, 0.01, true);
     };
-    glassAlong(front, 0.0, 0.62, cabW * 0.86);    // Windschutzscheibe
+    glassAlong(front, 0.1, 0.62, cabW * 0.86);    // Windschutzscheibe (beginnt über der Haube, kein dunkler Schlitz)
     glassAlong(back, 0.42, 0.94, cabW * 0.7);     // Heckscheibe
     // Seitenfenster: etwas kleiner als die Kabine, aber breiter -> ragt seitlich als Glas heraus
     const win = new THREE.Shape();
