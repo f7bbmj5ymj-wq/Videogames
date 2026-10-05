@@ -22,6 +22,7 @@ const CARS = [
     color: 0xd4d6d8,          // silber (oben); unten blau, siehe "livery953"
     accent: 0x13235f,
     rim: 0xeeeeec,            // weisse Felgen …
+    spoilerColor: 0xf4f4f2,   // weisser Heckspoiler
     spokes: 5, spokeW: 0.17,  // … mit 5 breiten Speichen
     offroadTires: true,       // grobstollige Geländereifen
     desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
@@ -325,6 +326,7 @@ function makeCarMesh(spec) {
     return m;
   };
   const box = (w, h, l, mat, x, y, z) => add(new THREE.BoxGeometry(w, h, l), mat, x, y, z);
+  const lerp = (a, c, t) => a + (c - a) * t;
   const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
   const flareF = b.flareF ?? 0.02, flareR = b.flareR ?? 0.02;
   const zFA = b.wb / 2 + (b.axleOff || 0), zRA = -b.wb / 2 + (b.axleOff || 0); // Vorder- und Hinterachse
@@ -350,8 +352,10 @@ function makeCarMesh(spec) {
       }
       // 911: vordere Kotflügel liegen höher als die Motorhaube
       if (b.humps) {
+        // bis ganz nach vorne an die Nase; "oben" ist vorne tiefer, weil die Haube abfällt
+        const topY = lerp(y1, noseY, smooth(zf, L, z));
         y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
-          * smooth(y1 - 0.35, y1 - 0.02, y) * smooth(L + 0.1, L - 0.35, z) * (y < y1 + 0.02 ? 1 : 0);
+          * smooth(topY - 0.3, topY - 0.02, y) * (y < y1 + 0.02 ? 1 : 0);
       }
       p.setXYZ(i, x, y, z);
     }
@@ -428,6 +432,13 @@ function makeCarMesh(spec) {
           vec3 gold = vec3(0.55, 0.34, 0.12);
           vec3 red = vec3(0.6, 0.012, 0.025);
           vec3 col = d < 0.0 ? blue : d < 0.024 ? gold : d < 0.036 ? silver : d < 0.06 ? red : silver;
+          // Mittelstreifen oben über Haube, Dach und Heck: Blau in der Mitte, daneben Rot und Gold
+          float ax = abs(vCarPos.x);
+          if (d > 0.06 && vCarPos.y > ${f(y1 - 0.06)}) {
+            if (ax < 0.035) col = blue;
+            else if (ax < 0.06) col = red;
+            else if (ax > 0.075 && ax < 0.095) col = gold;
+          }
           vec4 diffuseColor = vec4(col, opacity);`);
     };
   }
@@ -467,7 +478,7 @@ function makeCarMesh(spec) {
     for (const p of back.getPoints(24).slice(1)) cab.lineTo(p.x, p.y);
     cab.closePath();
     const cabW = b.w * 0.86;
-    extrude(cab, cabW, paint, 0.06, true);
+    extrude(cab, cabW, bodyMat, 0.06, true);
     // Glasstreifen, der einem Stück der Kurve folgt (Windschutz- und Heckscheibe)
     // (die abgerundeten Kanten machen die Kabine ca. 5 cm dicker als ihren Umriss,
     //  deshalb liegt das Glas 3,5–6,5 cm über der Kurve)
@@ -556,14 +567,14 @@ function makeCarMesh(spec) {
   box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);          // Frontlippe
   box(b.w * 0.9, 0.1, 0.25, trim, 0, y0 + 0.06, -L + 0.1);            // Diffusor
   box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
-  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, RZ - 0.01);
+  if (!ex.has("porscheBadge")) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, RZ - 0.01); // Dakar: "911 Dakar"-Schild statt Nummernschild
 
   // Scheinwerfer und Rücklichter
   for (const sx of [-1, 1]) {
     if (ex.has("roundLights")) {
       // grosse, runde Scheinwerfer vorne in den Kotflügeln (beim 911 typisch "Froschaugen")
       const hr = b.humps ? 0.135 : 0.15, tilt = b.humps ? 0.6 : 0.3;
-      const hx = sx * b.w * 0.33, hy = noseY - 0.02 + (b.humps || 0) * 1.0;
+      const hx = sx * b.w * 0.33, hy = noseY + (b.humps || 0) * 1.0 + (b.humps ? 0.05 : -0.02);
       const hz = frontZ(hx, hy) - (b.humps ? 0.1 : 0.06);
       const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
       l.rotation.x = Math.PI / 2 - tilt;
@@ -594,17 +605,18 @@ function makeCarMesh(spec) {
   if (ex.has("ducktail")) {
     // fester Heckspoiler mit schwarzer Abrisskante
     const dy = ex.has("fastback") ? y1 - 0.1 : y1 + 0.02;
-    box(b.w * 0.78, 0.05, 0.36, paint, 0, dy, -L + 0.22).rotation.x = 0.28;
-    box(b.w * 0.76, 0.04, 0.05, trim, 0, dy + 0.05, -L + 0.06);
+    // beim Dakar weiss und ohne schwarze Kante (wie das Modell)
+    const tailMat = spec.spoilerColor != null ? new THREE.MeshPhysicalMaterial({ color: spec.spoilerColor, roughness: 0.3, clearcoat: 1 }) : paint;
+    box(b.w * 0.78, 0.05, 0.36, tailMat, 0, dy, -L + 0.22).rotation.x = 0.28;
+    if (spec.spoilerColor == null) box(b.w * 0.76, 0.04, 0.05, trim, 0, dy + 0.05, -L + 0.06);
   }
   if (ex.has("engineGrille")) {
-    // schwarzes Lüftungsgitter auf der hinteren Motorhaube, mit Lamellen
-    const gz = zr - 0.18, gy = y1 - 0.025;
-    const base = box(b.w * 0.46, 0.02, 0.3, trim, 0, gy, gz);
-    base.rotation.x = -0.2;
-    for (let k = -2; k <= 2; k++) {
-      const sl = box(b.w * 0.44, 0.015, 0.025, seam, 0, gy + 0.012 + k * 0.012, gz + k * 0.055);
-      sl.rotation.x = -0.2;
+    // schwarzes Lüftungsgitter unter der Heckscheibe, mit Lamellen
+    const gz = zr - 0.2, gy = y1 - 0.03, tilt = -0.25;
+    box(b.w * 0.56, 0.02, 0.36, seam, 0, gy, gz).rotation.x = tilt;
+    for (let k = -3; k <= 3; k++) {
+      const sl = box(b.w * 0.54, 0.03, 0.022, trim, 0, gy + 0.02 - k * 0.011, gz + k * 0.05);
+      sl.rotation.x = tilt;
     }
   }
   if (ex.has("towHooks")) {
@@ -615,19 +627,37 @@ function makeCarMesh(spec) {
     f.rotation.x = r.rotation.x = Math.PI / 2;
   }
   if (ex.has("porscheBadge")) {
+    // schwarzes "911 Dakar"-Schild in der Mitte des Hecks
     const c = document.createElement("canvas");
-    c.width = 512; c.height = 64;
+    c.width = 256; c.height = 64;
     const g = c.getContext("2d");
-    g.font = "700 46px system-ui, sans-serif";
-    g.textAlign = "center";
-    g.fillStyle = "#1a1a1a";
-    g.fillText("P O R S C H E", 256, 48);
+    g.fillStyle = "#16181b";
+    g.beginPath(); g.roundRect(0, 0, 256, 64, 10); g.fill();
+    g.fillStyle = "#e8e8e8";
+    g.font = "700 30px system-ui, sans-serif";
+    g.fillText("911", 40, 43);
+    g.font = "italic 600 32px Georgia, serif";
+    g.fillText("Dakar", 104, 44);
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
-    const pl = add(new THREE.PlaneGeometry(0.62, 0.078), new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.4 }), 0, y1 - 0.42, RZ - 0.012);
+    const pl = add(new THREE.PlaneGeometry(0.42, 0.105), new THREE.MeshStandardMaterial({ map: t, roughness: 0.4 }),
+      0, (y1 - 0.34 + y0 + 0.42) / 2, RZ - 0.012);   // zwischen Leuchtband und Nummernschild
     pl.rotation.y = Math.PI;
     pl.castShadow = false;
+    // silberner Diffusor mit senkrechten Schlitzen und zwei grossen Endrohren
+    const alu = new THREE.MeshStandardMaterial({ color: 0xa9adb1, metalness: 0.7, roughness: 0.35 });
+    box(b.w * 0.82, 0.15, 0.08, alu, 0, y0 + 0.08, RZ + 0.02);
+    for (let k = -2; k <= 2; k++) box(0.05, 0.1, 0.02, seam, k * 0.11, y0 + 0.08, RZ - 0.025);
+    for (const sx of [-1, 1]) {
+      const tip = add(new THREE.CylinderGeometry(0.07, 0.07, 0.14, 24), chrome, sx * b.w * 0.3, y0 + 0.09, RZ - 0.01);
+      tip.rotation.x = Math.PI / 2;
+      tip.scale.set(1.35, 1, 1);
+      const hole = add(new THREE.CylinderGeometry(0.055, 0.055, 0.145, 24), seam, sx * b.w * 0.3, y0 + 0.09, RZ - 0.012);
+      hole.rotation.x = Math.PI / 2;
+      hole.scale.set(1.35, 1, 1);
+    }
   }
+
   if (ex.has("spoiler")) box(b.w * 0.88, 0.05, 0.32, paint, 0, y1 + 0.06, -L + 0.2).rotation.x = 0.12;
   // Echter Heckflügel: Flügelprofil (runde Vorderkante, dünne Hinterkante),
   // schräge Stützen, abgerundete Endplatten und eine kleine Abrisskante.
