@@ -220,11 +220,43 @@ renderer.toneMappingExposure = 0.58;
 document.body.prepend(renderer.domElement);
 const ANISO = renderer.capabilities.getMaxAnisotropy();
 
+// Höhennebel: in Tälern dichter, in der Höhe dünner, und in Richtung Sonne
+// warm aufgehellt (wie Dunst an einem Sommertag). Dafür ersetzen wir die
+// Nebel-Bausteine (Shader-Chunks) von three.js durch eigene.
+const FOG_DENSITY = 0.00038, FOG_FALLOFF = 0.0055;
+const SUN_DIR = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 30), THREE.MathUtils.degToRad(145));
+{
+  const f = (v) => v.toFixed(6);
+  THREE.ShaderChunk.fog_pars_vertex = "#ifdef USE_FOG\n varying vec3 vFogWorld;\n#endif";
+  THREE.ShaderChunk.fog_vertex = "#ifdef USE_FOG\n vFogWorld = transpose(mat3(viewMatrix)) * (mvPosition.xyz - viewMatrix[3].xyz);\n#endif";
+  THREE.ShaderChunk.fog_pars_fragment = `#ifdef USE_FOG
+  uniform vec3 fogColor;
+  varying vec3 vFogWorld;
+  #ifdef FOG_EXP2
+    uniform float fogDensity;
+  #else
+    uniform float fogNear;
+    uniform float fogFar;
+  #endif
+#endif`;
+  THREE.ShaderChunk.fog_fragment = `#ifdef USE_FOG
+  vec3 fogRay = vFogWorld - cameraPosition;
+  float fogDist = length(fogRay);
+  float fogDy = fogRay.y;
+  float fogBase = ${f(FOG_DENSITY)} * exp(-${f(FOG_FALLOFF)} * max(cameraPosition.y, -20.0));
+  float fogInt = abs(fogDy) > 0.01 ? (1.0 - exp(-${f(FOG_FALLOFF)} * fogDy)) / (${f(FOG_FALLOFF)} * fogDy) : 1.0;
+  float fogAmount = 1.0 - exp(-fogBase * fogDist * fogInt);
+  float fogSun = pow(max(dot(fogRay / max(fogDist, 0.001), vec3(${f(SUN_DIR.x)}, ${f(SUN_DIR.y)}, ${f(SUN_DIR.z)})), 0.0), 6.0);
+  vec3 fogCol = mix(fogColor, vec3(2.0, 1.7, 1.3), fogSun * 0.5);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogCol, fogAmount);
+#endif`;
+}
+
 // Dunst in der Ferne (Luftperspektive): weit entfernte Berge werden bläulich-hell
-const HAZE = new THREE.Color(0x9fbedd);
+const HAZE = new THREE.Color(0xa9c6e6).multiplyScalar(1.5);
 const scene = new THREE.Scene();
 scene.background = HAZE.clone();
-scene.fog = new THREE.Fog(HAZE, 450, 6500);
+scene.fog = new THREE.Fog(HAZE, 450, 6500); // Nah/Fern werden vom Höhennebel oben nicht benutzt
 
 const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.3, 14000);
 addEventListener("resize", () => {
@@ -234,7 +266,6 @@ addEventListener("resize", () => {
 });
 
 // Physikalisch berechneter Himmel (Preetham-Modell) mit Sonne
-const SUN_DIR = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(90 - 30), THREE.MathUtils.degToRad(145));
 const sky = new THREE.Sky();
 sky.scale.setScalar(10000);
 sky.material.uniforms.turbidity.value = 2.2;
@@ -343,8 +374,10 @@ waterNormal.repeat.set(70, 70);
 const hub = roadPointAt(roads[0], 0); // Start/Ziel und Festival-Gelände
 
 // --- Gelände ---
+const TERRAIN_SEG = 320;
+let terrainGridTex = null; // Höhe, Grasmenge und Trockenheit je Gitterpunkt (für das Gras)
 (() => {
-  const SEG = 320;
+  const SEG = TERRAIN_SEG;
   const geo = new THREE.PlaneGeometry(WORLD, WORLD, SEG, SEG);
   geo.rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
@@ -358,6 +391,7 @@ const hub = roadPointAt(roads[0], 0); // Start/Ziel und Festival-Gelände
   geo.computeVertexNormals();
   const nrm = geo.attributes.normal;
   const colors = new Float32Array(pos.count * 3);
+  const grid = new Float32Array(pos.count * 4);
   const c = new THREE.Color();
   for (let i = 0; i < pos.count; i++) {
     const x = pos.getX(i), z = pos.getZ(i), h = pos.getY(i), ny = nrm.getY(i);
@@ -379,14 +413,28 @@ const hub = roadPointAt(roads[0], 0); // Start/Ziel und Festival-Gelände
     r = lerp(r, 0.6, sand); g = lerp(g, 0.56, sand); b = lerp(b, 0.47, sand);
     const shoulder = smoothstep(ROAD_W / 2 + 3, ROAD_W / 2 + 1, roadDist[i]) * (h > WATER ? 1 : 0);
     r = lerp(r, 0.45, shoulder); g = lerp(g, 0.42, shoulder); b = lerp(b, 0.37, shoulder);
+    const grassAmt = (1 - rock) * (1 - snow) * (1 - sand) * (1 - shoulder) * (h > WATER + 0.6 ? 1 : 0) * (roadDist[i] > ROAD_W / 2 + 2 ? 1 : 0);
+    grid.set([h, grassAmt, dry, 0], i * 4);
     c.setRGB(r, g, b, SRGB);
     colors.set([c.r, c.g, c.b], i * 3);
   }
   geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+  terrainGridTex = new THREE.DataTexture(grid, SEG + 1, SEG + 1, THREE.RGBAFormat, THREE.FloatType);
+  terrainGridTex.needsUpdate = true;
+  const mat = new THREE.MeshStandardMaterial({
     vertexColors: true, map: groundTex, normalMap: groundNormal,
     normalScale: new THREE.Vector2(0.45, 0.45), roughness: 1, metalness: 0,
-  }));
+  });
+  // Gegen sichtbare Wiederholungen: die Textur zusätzlich in viel grösserem
+  // Massstab darüberlegen, so entstehen grossflächige hellere und dunklere Stellen.
+  mat.onBeforeCompile = (sh) => {
+    sh.fragmentShader = sh.fragmentShader.replace("#include <map_fragment>", `
+      vec4 tA = texture2D(map, vMapUv);
+      vec4 tB = texture2D(map, vMapUv * 0.123 + vec2(0.31, 0.77));
+      vec4 tC = texture2D(map, vMapUv * 0.0171 + vec2(0.53, 0.19));
+      diffuseColor.rgb *= tA.rgb * (tB.r * 1.15) * (0.75 + tC.r * 0.35);`);
+  };
+  const mesh = new THREE.Mesh(geo, mat);
   mesh.receiveShadow = true;
   scene.add(mesh);
 })();
@@ -476,16 +524,18 @@ function mergeGeos(geos) {
   const parts = geos.map((g) => (g.index ? g.toNonIndexed() : g));
   let n = 0;
   for (const p of parts) n += p.attributes.position.count;
-  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3);
+  const pos = new Float32Array(n * 3), nor = new Float32Array(n * 3), uv = new Float32Array(n * 2);
   let o = 0;
   for (const p of parts) {
     pos.set(p.attributes.position.array, o * 3);
     nor.set(p.attributes.normal.array, o * 3);
+    if (p.attributes.uv) uv.set(p.attributes.uv.array, o * 2);
     o += p.attributes.position.count;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   g.setAttribute("normal", new THREE.BufferAttribute(nor, 3));
+  g.setAttribute("uv", new THREE.BufferAttribute(uv, 2));
   return g;
 }
 // Steilheit des Geländes (0 = flach)
@@ -501,11 +551,47 @@ function slopeAt(x, z) {
   const leafCrown = mergeGeos([[0, 6.2, 0, 2.6], [1.3, 5.4, 0.6, 1.9], [-1.1, 5.6, -0.8, 2.0], [0.2, 7.6, -0.3, 1.8]].map(([x, y, z, r]) =>
     new THREE.IcosahedronGeometry(r, 1).translate(x, y, z)));
   const trunkGeo = new THREE.CylinderGeometry(0.2, 0.38, 4.5, 7).translate(0, 2.25, 0);
-  const crownMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95 });
+  // Nadeln: viele kleine Striche, unten ausgefranst -> die Äste wirken buschig
+  const foliage = (draw) => {
+    const cv = document.createElement("canvas");
+    cv.width = cv.height = 256;
+    const g = cv.getContext("2d");
+    draw(g);
+    const t = new THREE.CanvasTexture(cv);
+    t.colorSpace = SRGB;
+    t.wrapS = THREE.RepeatWrapping;
+    t.anisotropy = ANISO;
+    return t;
+  };
+  const needleTex = foliage((g) => {
+    g.fillStyle = "#1f3a1c";
+    g.fillRect(0, 0, 256, 170);
+    for (let i = 0; i < 2600; i++) {
+      const x = rng() * 256, y0 = rng() * 230, len = 12 + rng() * 34;
+      g.strokeStyle = `hsl(${95 + rng() * 35}, ${35 + rng() * 25}%, ${12 + rng() * 22}%)`;
+      g.lineWidth = 1 + rng() * 2.2;
+      g.beginPath();
+      g.moveTo(x, y0);
+      g.lineTo(x + (rng() - 0.5) * 14, Math.min(254, y0 + len));
+      g.stroke();
+    }
+  });
+  needleTex.repeat.set(3, 1);
+  const leafTex = foliage((g) => {
+    for (let i = 0; i < 1800; i++) {
+      const x = rng() * 256, y = rng() * 256, r = 3 + rng() * 6;
+      g.fillStyle = `hsl(${75 + rng() * 40}, ${35 + rng() * 25}%, ${18 + rng() * 26}%)`;
+      g.beginPath();
+      g.ellipse(x, y, r, r * 0.55, rng() * Math.PI, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+  const crownMat = new THREE.MeshStandardMaterial({ map: needleTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.9 });
+  const leafMat = new THREE.MeshStandardMaterial({ map: leafTex, alphaTest: 0.5, side: THREE.DoubleSide, roughness: 0.85 });
   const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3423, roughness: 1 });
   const MAX_S = 3600, MAX_L = 800;
   const sCrowns = new THREE.InstancedMesh(spruceCrown, crownMat, MAX_S);
-  const lCrowns = new THREE.InstancedMesh(leafCrown, crownMat, MAX_L);
+  const lCrowns = new THREE.InstancedMesh(leafCrown, leafMat, MAX_L);
   const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, MAX_S + MAX_L);
   const m = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), p = new THREE.Vector3();
   const up = new THREE.Vector3(0, 1, 0), c = new THREE.Color();
@@ -527,10 +613,10 @@ function slopeAt(x, z) {
     trunks.setMatrixAt(nt++, m);
     if (leafy) {
       lCrowns.setMatrixAt(nl, m);
-      lCrowns.setColorAt(nl++, c.setHSL(0.2 + rng() * 0.08, 0.45, 0.24 + rng() * 0.1, SRGB));
+      lCrowns.setColorAt(nl++, c.setHSL(0.18 + rng() * 0.1, 0.35, 0.7 + rng() * 0.25, SRGB));
     } else {
       sCrowns.setMatrixAt(ns, m);
-      sCrowns.setColorAt(ns++, c.setHSL(0.3 + rng() * 0.07, 0.35 + rng() * 0.15, 0.12 + rng() * 0.07, SRGB));
+      sCrowns.setColorAt(ns++, c.setHSL(0.22 + rng() * 0.12, 0.25, 0.6 + rng() * 0.3, SRGB));
     }
     addObstacle(x, z, 0.55 * s);
   }
@@ -568,6 +654,91 @@ function slopeAt(x, z) {
   mesh.count = n;
   mesh.castShadow = mesh.receiveShadow = true;
   scene.add(mesh);
+})();
+
+// --- Gras: zehntausende Halme rund um die Kamera, die im Wind wehen ---
+// Die Halme liegen in einer Kachel, die mit der Kamera mitwandert. Höhe, Grasmenge
+// und Trockenheit liest die Grafikkarte aus der Gelände-Textur (terrainGridTex).
+const GRASS_MAX = 80000, GRASS_TILE = 84;
+const grass = (() => {
+  // Ein Büschel aus 5 schmalen, leicht gebogenen Halmen
+  const pos = [], col = [], nor = [], idx = [];
+  const cBase = new THREE.Color().setRGB(0.17, 0.28, 0.07, SRGB), cTip = new THREE.Color().setRGB(0.4, 0.58, 0.17, SRGB), c = new THREE.Color();
+  for (let k = 0; k < 5; k++) {
+    const a = k * 2.4, ox = Math.cos(a) * 0.09, oz = Math.sin(a) * 0.09;
+    const h = 0.2 + (k % 3) * 0.07, w = 0.022;
+    const dx = Math.cos(a + 1.3), dz = Math.sin(a + 1.3);     // Breite des Halms
+    const lx = -dz * (k % 2 ? 0.08 : -0.08), lz = dx * (k % 2 ? 0.08 : -0.08); // Neigung
+    const v0 = pos.length / 3;
+    for (const [t, ww] of [[0, w], [0.5, w * 0.75], [1, 0]]) {
+      const y = t * h, bend = t * t;
+      const n = ww === 0 ? 1 : 2;
+      for (let side = 0; side < n; side++) {
+        const sw = n === 1 ? 0 : side ? ww : -ww;
+        pos.push(ox + dx * sw + lx * bend, y, oz + dz * sw + lz * bend);
+        c.copy(cBase).lerp(cTip, t);
+        col.push(c.r, c.g, c.b);
+        nor.push(0, 1, 0);
+      }
+    }
+    idx.push(v0, v0 + 1, v0 + 2, v0 + 1, v0 + 3, v0 + 2, v0 + 2, v0 + 3, v0 + 4);
+  }
+  const geo = new THREE.InstancedBufferGeometry();
+  geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute("normal", new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  geo.setIndex(idx);
+  const off = new Float32Array(GRASS_MAX * 4);
+  for (let i = 0; i < GRASS_MAX; i++) {
+    off.set([(rng() - 0.5) * GRASS_TILE, (rng() - 0.5) * GRASS_TILE, rng() * Math.PI * 2, rng()], i * 4);
+  }
+  geo.setAttribute("aOffset", new THREE.InstancedBufferAttribute(off, 4));
+  geo.instanceCount = GRASS_MAX;
+
+  const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  const uniforms = { uHeight: { value: terrainGridTex }, uTime: { value: 0 } };
+  mat.onBeforeCompile = (sh) => {
+    Object.assign(sh.uniforms, uniforms);
+    sh.vertexShader = sh.vertexShader
+      .replace("#include <common>", `#include <common>
+        attribute vec4 aOffset;
+        uniform sampler2D uHeight;
+        uniform float uTime;
+        vec4 grassSample(vec2 xz) {
+          vec2 g = (xz + ${HALF.toFixed(1)}) / ${(WORLD / TERRAIN_SEG).toFixed(4)};
+          ivec2 i = clamp(ivec2(floor(g)), ivec2(0), ivec2(${TERRAIN_SEG - 1}));
+          vec2 f = clamp(g - vec2(i), 0.0, 1.0);
+          vec4 a = texelFetch(uHeight, i, 0), b = texelFetch(uHeight, i + ivec2(1, 0), 0);
+          vec4 c = texelFetch(uHeight, i + ivec2(0, 1), 0), d = texelFetch(uHeight, i + ivec2(1, 1), 0);
+          return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+        }`)
+      .replace("void main() {", `void main() {
+        vec2 gP = aOffset.xy + floor((cameraPosition.xz - aOffset.xy) / ${GRASS_TILE.toFixed(1)} + 0.5) * ${GRASS_TILE.toFixed(1)};
+        vec4 gS = grassSample(gP);
+        float gDist = length(gP - cameraPosition.xz);
+        float gScale = step(aOffset.w, gS.g * 1.15 - 0.1) * smoothstep(${(GRASS_TILE * 0.5).toFixed(1)}, ${(GRASS_TILE * 0.3).toFixed(1)}, gDist)
+                     * (0.6 + 0.8 * fract(aOffset.w * 7.31));
+        float gC = cos(aOffset.z), gSn = sin(aOffset.z);`)
+      .replace("#include <beginnormal_vertex>", "vec3 objectNormal = vec3(0.0, 1.0, 0.0);")
+      .replace("#include <color_vertex>", `#include <color_vertex>
+        vColor.rgb *= mix(vec3(1.0), vec3(1.3, 1.15, 0.8), gS.b) * (0.8 + 0.4 * fract(aOffset.w * 13.7));`)
+      .replace("#include <begin_vertex>", `
+        vec3 transformed = position * gScale;
+        transformed.xz = mat2(gC, -gSn, gSn, gC) * transformed.xz;
+        float gWind = sin(uTime * 1.6 + gP.x * 0.13 + gP.y * 0.07) * 0.6 + sin(uTime * 3.7 + gP.x * 0.9 + gP.y * 0.4) * 0.25;
+        float gBend = position.y * position.y * gScale;
+        transformed.x += gWind * gBend * 0.9;
+        transformed.z += gWind * gBend * 0.4;
+        transformed += vec3(gP.x, gS.r - 0.04, gP.y);`);
+    // Halme sind dünn: beide Seiten gleich beleuchten (sonst ist die Rückseite schwarz)
+    sh.fragmentShader = sh.fragmentShader.replace("#include <normal_fragment_begin>",
+      THREE.ShaderChunk.normal_fragment_begin.replace("normal *= faceDirection;", ""));
+  };
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+  return { mesh, uniforms };
 })();
 
 // --- Chalets entlang der Strassen ---
@@ -1404,7 +1575,7 @@ const smokeTex = (() => {
   return new THREE.CanvasTexture(c);
 })();
 const smoke = Array.from({ length: 70 }, () => {
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0 }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTex, transparent: true, depthWrite: false, opacity: 0, fog: false }));
   s.visible = false;
   scene.add(s);
   return { s, life: 0, max: 1 };
@@ -1530,6 +1701,7 @@ function renderStats() {
     ["Beste Driftzone", fmt(save.bestDrift)],
     ...traps.map((t) => [t.name, save.traps[t.name] ? `${save.traps[t.name]} km/h` : "–"]),
     ["Auto", carSpec.name],
+    ["Grafik (Q)", QUALITY[quality].name],
   ];
   $("stats").innerHTML = rows.map(([a, b]) => `<tr><td>${a}</td><td>${b}</td></tr>`).join("");
 }
@@ -1912,6 +2084,7 @@ addEventListener("keydown", (e) => {
     if (e.code === "Escape") setMode("drive");
     if (e.code === "KeyG") openGarage();
     if (e.code === "KeyT") openTuning("drive");
+    if (e.code === "KeyQ") { setQuality((quality + 1) % QUALITY.length, true); notify(`Grafik: ${QUALITY[quality].name}`, ""); renderStats(); }
     if (e.code === "Backspace") { abortRace(); setMode("drive"); }
   } else if (mode === "drive") {
     if (e.code === "Escape") setMode("pause");
@@ -1920,6 +2093,7 @@ addEventListener("keydown", (e) => {
     if (e.code === "KeyR" && race.state !== "countdown") resetToRoad();
     if (e.code === "KeyG") openGarage();
     if (e.code === "KeyT") openTuning("drive");
+    if (e.code === "KeyQ") { setQuality((quality + 1) % QUALITY.length, true); notify(`Grafik: ${QUALITY[quality].name}`, ""); }
     if (e.code === "Backspace") abortRace();
     if (e.code === "Enter" && race.state === "none" && nearRaceStart() && Math.hypot(car.vx, car.vz) < 8) startRace();
   }
@@ -2017,6 +2191,135 @@ function update(dt) {
   if (mode !== "title" && mode !== "garage" && mode !== "tuning") updateHUD(kmh(Math.abs(car.vF)), gi.gear, gi.rpm);
 }
 
+// =====================================================================
+// Grafik-Qualität, Nachbearbeitung (Bloom, Farbabstimmung) und Lensflare
+// =====================================================================
+const QUALITY = [
+  { name: "Niedrig", ratio: 0.8, shadow: 1024, range: 55, grass: 0, post: false },
+  { name: "Mittel", ratio: 1, shadow: 2048, range: 80, grass: 30000, post: true },
+  { name: "Hoch", ratio: 1.5, shadow: 4096, range: 110, grass: GRASS_MAX, post: true },
+];
+let quality = clamp(save.quality ?? 2, 0, QUALITY.length - 1);
+
+// Bild erst in eine Zwischen-Textur rendern (mit Kantenglättung), dann Effekte darüber
+const composer = new THREE.EffectComposer(renderer,
+  new THREE.WebGLRenderTarget(innerWidth, innerHeight, { type: THREE.HalfFloatType, samples: 4 }));
+composer.addPass(new THREE.RenderPass(scene, camera));
+const bloomPass = new THREE.UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.25, 0.6, 1.5);
+composer.addPass(bloomPass);
+composer.addPass(new THREE.OutputPass());
+// Farbabstimmung wie bei einer Filmkamera: etwas mehr Kontrast und Sättigung,
+// warme Lichter, kühle Schatten, Vignette, feines Korn und Tempo-Unschärfe am Rand
+const gradePass = new THREE.ShaderPass({
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uSpeed: { value: 0 } },
+  vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+  fragmentShader: `
+    uniform sampler2D tDiffuse; uniform float uTime; uniform float uSpeed; varying vec2 vUv;
+    void main() {
+      vec2 d = vUv - 0.5;
+      float blur = uSpeed * 0.02 * smoothstep(0.15, 0.6, length(d));
+      vec3 col = vec3(0.0);
+      for (int i = 0; i < 6; i++) col += texture2D(tDiffuse, vUv - d * blur * float(i) / 6.0).rgb;
+      col /= 6.0;
+      float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      col = mix(vec3(l), col, 1.1);
+      col = (col - 0.5) * 1.05 + 0.5;
+      col *= mix(vec3(0.97, 0.99, 1.04), vec3(1.03, 1.0, 0.96), smoothstep(0.2, 0.8, l));
+      col *= mix(0.8, 1.0, smoothstep(0.9, 0.3, length(d * vec2(1.0, 0.75))));
+      float n = fract(sin(dot(vUv * 913.0 + fract(uTime) * 37.0, vec2(12.9898, 78.233))) * 43758.5453);
+      col += (n - 0.5) * 0.012;
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+    }`,
+});
+composer.addPass(gradePass);
+
+// Lichtreflex der Sonne in der Kameralinse
+const flareLight = (() => {
+  const tex = (draw) => {
+    const c = document.createElement("canvas");
+    c.width = c.height = 128;
+    draw(c.getContext("2d"));
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = SRGB;
+    return t;
+  };
+  const glow = tex((g) => {
+    const gr = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+    gr.addColorStop(0, "rgba(255,250,235,1)"); gr.addColorStop(0.15, "rgba(255,230,180,0.6)"); gr.addColorStop(1, "rgba(255,200,140,0)");
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  });
+  const ring = tex((g) => {
+    const gr = g.createRadialGradient(64, 64, 30, 64, 64, 64);
+    gr.addColorStop(0, "rgba(160,200,255,0)"); gr.addColorStop(0.8, "rgba(170,210,255,0.25)"); gr.addColorStop(1, "rgba(170,210,255,0)");
+    g.fillStyle = gr; g.fillRect(0, 0, 128, 128);
+  });
+  const light = new THREE.PointLight(0xffffff, 0, 1); // leuchtet nicht, trägt nur den Linsenreflex
+  const lf = new THREE.Lensflare();
+  lf.addElement(new THREE.LensflareElement(glow, 420, 0, new THREE.Color(1, 0.95, 0.85)));
+  lf.addElement(new THREE.LensflareElement(ring, 70, 0.55));
+  lf.addElement(new THREE.LensflareElement(ring, 110, 0.75));
+  lf.addElement(new THREE.LensflareElement(glow, 60, 0.9, new THREE.Color(0.6, 0.8, 1)));
+  lf.addElement(new THREE.LensflareElement(ring, 160, 1.05));
+  light.add(lf);
+  scene.add(light);
+  return light;
+})();
+
+function applyQuality() {
+  const q = QUALITY[quality];
+  renderer.setPixelRatio(Math.min(devicePixelRatio, q.ratio));
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setPixelRatio(Math.min(devicePixelRatio, q.ratio));
+  composer.setSize(innerWidth, innerHeight);
+  sun.shadow.mapSize.set(q.shadow, q.shadow);
+  if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  Object.assign(sun.shadow.camera, { left: -q.range, right: q.range, top: q.range, bottom: -q.range });
+  sun.shadow.camera.updateProjectionMatrix();
+  grass.mesh.visible = q.grass > 0;
+  grass.mesh.geometry.instanceCount = Math.max(1, q.grass);
+}
+addEventListener("resize", () => applyQuality());
+
+function setQuality(level, manual) {
+  quality = level;
+  save.quality = level;
+  if (manual) save.qualityManual = true;
+  storeSave();
+  applyQuality();
+}
+
+function renderFrame(dt) {
+  grass.uniforms.uTime.value += dt;
+  flareLight.position.copy(camera.position).addScaledVector(SUN_DIR, 9000);
+  if (QUALITY[quality].post) {
+    gradePass.uniforms.uTime.value += dt;
+    const sp = Math.hypot(car.vx, car.vz);
+    gradePass.uniforms.uSpeed.value = mode === "drive" && cam.mode === 0 ? clamp((sp - 35) / 40, 0, 1) : 0;
+    composer.render(dt);
+  } else {
+    renderer.render(scene, camera);
+  }
+}
+
+// Läuft es zu langsam? Dann automatisch eine Stufe herunter (nur einmal pro Stufe,
+// und nicht, wenn man die Qualität selbst mit Q eingestellt hat).
+const perf = { t: 0, frames: 0, slow: 0 };
+function checkPerformance(raw) {
+  if (mode !== "drive" || save.qualityManual || quality === 0 || raw > 0.25) return;
+  perf.t += raw;
+  perf.frames++;
+  if (perf.t < 2) return;
+  const fps = perf.frames / perf.t;
+  perf.slow = fps < 32 ? perf.slow + 1 : 0;
+  perf.t = perf.frames = 0;
+  if (perf.slow >= 2) {
+    perf.slow = 0;
+    setQuality(quality - 1, false);
+    notify(`Grafik automatisch auf „${QUALITY[quality].name}“ gestellt, damit es flüssig läuft (Q zum Ändern)`, "");
+  }
+}
+applyQuality();
+
 placeCar(0, -40, -3);
 cam.yaw = car.yaw;
 cam.pos.set(car.x, car.y + 3, car.z);
@@ -2024,14 +2327,16 @@ setMode("title");
 
 let last = performance.now();
 function frame(now) {
-  const dt = clamp((now - last) / 1000, 0, 0.05); // nie negativ (erstes Bild!) und nie zu gross
+  const raw = (now - last) / 1000;
+  const dt = clamp(raw, 0, 0.05); // nie negativ (erstes Bild!) und nie zu gross
   last = now;
   if (mode !== "pause" && mode !== "results") update(dt);
   else updateAudio(1000, 0, 0, false);
-  renderer.render(scene, camera);
+  renderFrame(dt);
+  checkPerformance(raw);
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 
 // Für Tests in der Browser-Konsole
-window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam, openTuning, buyTuning, get carSpec() { return carSpec; } };
+window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam, openTuning, buyTuning, setQuality, get quality() { return quality; }, get carSpec() { return carSpec; } };

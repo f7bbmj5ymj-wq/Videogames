@@ -27,6 +27,18 @@ const CARS = [
       extras: ["fastback", "rack", "lightbar", "cladding", "roundLights", "stripe", "ducktail"] },
   },
   {
+    id: "impreza22b",
+    name: "Subaru Impreza 22B STi",
+    kind: "Rallye-Legende",
+    color: 0x1b3fa0,
+    accent: 0x1b3fa0,
+    rim: 0xc9a23a,
+    desc: "Die Rallye-Legende von 1998: Allradantrieb, breite Kotflügel, goldene Felgen und grosser Heckflügel. Auf Schotter und Gras kaum zu schlagen.",
+    top: 69, accel: 13.6, grip: 6.8, off: 0.9,
+    body: { w: 1.92, l: 4.35, h: 0.6, ride: 0.27, ch: 0.52, cl: 1.85, cz: -0.25, wr: 0.36, ww: 0.32, wb: 2.52, rake: 1.5,
+      extras: ["wing", "hoodScoop", "flares", "fogLights"] },
+  },
+  {
     id: "falke",
     name: "Falke GT",
     kind: "Supersportwagen",
@@ -251,6 +263,8 @@ function makeCarMesh(spec) {
   const trim = new THREE.MeshStandardMaterial({ color: 0x121417, roughness: 0.6, metalness: 0.1 });
   const glass = new THREE.MeshPhysicalMaterial({ color: 0x0c1218, metalness: 0.9, roughness: 0.03, clearcoat: 1, envMapIntensity: 1.6 });
   const chrome = new THREE.MeshStandardMaterial({ color: 0xd8dde3, metalness: 1, roughness: 0.18 });
+  // Felgenfarbe (z. B. Gold beim Impreza), sonst Chrom
+  const rimMat = spec.rim ? new THREE.MeshStandardMaterial({ color: spec.rim, metalness: 0.9, roughness: 0.28 }) : chrome;
   const head = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff3d6, emissiveIntensity: 1.6, roughness: 0.1 });
   const tail = new THREE.MeshStandardMaterial({ color: 0x3a0000, emissive: 0xff1010, emissiveIntensity: 0.5, roughness: 0.2 });
   const plate = new THREE.MeshStandardMaterial({ color: 0xf2f2f2, roughness: 0.5 });
@@ -411,6 +425,26 @@ function makeCarMesh(spec) {
     }
     for (const sx of [-1, 1]) box(0.08, 0.14, b.wb - 2 * ar - 0.1, trim, sx * (b.w / 2 + 0.02), y0 + 0.1, 0);
   }
+  if (ex.has("flares")) {
+    // breite, lackierte Kotflügel-Verbreiterungen (wie beim Impreza 22B)
+    for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
+      const f = add(new THREE.TorusGeometry(ar + 0.03, 0.1, 8, 20, Math.PI), paint, sx * (b.w / 2 + 0.02), b.wr, cz);
+      f.rotation.y = Math.PI / 2;
+      f.scale.set(1, 1, 0.8);
+    }
+  }
+  if (ex.has("hoodScoop")) {
+    // Lufthutze auf der Motorhaube
+    const zs = zf + (L - zf) * 0.3;
+    box(0.62, 0.1, 0.5, paint, 0, y1 - 0.01, zs).rotation.x = 0.06;
+    box(0.5, 0.06, 0.04, trim, 0, y1 + 0.01, zs + 0.25);
+  }
+  if (ex.has("fogLights")) {
+    for (const sx of [-1, 1]) {
+      const l = add(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 16), head, sx * b.w * 0.3, y0 + 0.2, L + 0.06);
+      l.rotation.x = Math.PI / 2;
+    }
+  }
   if (ex.has("stripe")) {
     for (const sx of [-1, 1]) box(0.02, 0.1, b.wb - 2 * ar - 0.1, accent, sx * (b.w / 2 + 0.07), y0 + (y1 - y0) * 0.5, 0);
   }
@@ -450,12 +484,12 @@ function makeCarMesh(spec) {
     const spin = new THREE.Group();
     const parts = [new THREE.Mesh(tireGeo, tireMat), new THREE.Mesh(barrelGeo, barrelMat)];
     for (let k = 0; k < 5; k++) {
-      const sp = new THREE.Mesh(spokeGeo, chrome);
+      const sp = new THREE.Mesh(spokeGeo, rimMat);
       sp.rotation.x = (k / 5) * Math.PI;
       sp.position.x = sx * (b.ww / 2 - 0.005);
       parts.push(sp);
     }
-    const hub = new THREE.Mesh(hubGeo, chrome);
+    const hub = new THREE.Mesh(hubGeo, rimMat);
     hub.position.x = sx * (b.ww / 2 + 0.01);
     parts.push(hub);
     for (const p of parts) { p.castShadow = true; spin.add(p); }
