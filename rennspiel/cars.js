@@ -21,14 +21,16 @@ const CARS = [
     kind: "Gelände-Sportwagen",
     color: 0xd4d6d8,          // silber (oben); unten blau, siehe "livery953"
     accent: 0x13235f,
-    rim: 0xd9dadb,            // silberne Felgen …
+    rim: 0xeeeeec,            // weisse Felgen …
     spokes: 5, spokeW: 0.17,  // … mit 5 breiten Speichen
     offroadTires: true,       // grobstollige Geländereifen
     desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.47, cl: 1.2, cz: -0.12, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.9,
+    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.45, cl: 1.15, cz: -0.25, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
+      axleOff: 0.1, haunch: 0.08,                  // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
-      humps: 0.17, flareF: 0.035, flareR: 0.09,    // Kotflügel vorne höher als die Haube, breite "Hüften" hinten
+      slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
+      humps: 0.12, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne höher als die Haube, "Hüften" hinten
       extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
@@ -324,6 +326,7 @@ function makeCarMesh(spec) {
   const box = (w, h, l, mat, x, y, z) => add(new THREE.BoxGeometry(w, h, l), mat, x, y, z);
   const smooth = (e0, e1, x) => { const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0))); return t * t * (3 - 2 * t); };
   const flareF = b.flareF ?? 0.02, flareR = b.flareR ?? 0.02;
+  const zFA = b.wb / 2 + (b.axleOff || 0), zRA = -b.wb / 2 + (b.axleOff || 0); // Vorder- und Hinterachse
   // Formt die gerade gezogene Karosserie wie ein echtes Auto um
   const deform = (geo) => {
     const p = geo.attributes.position;
@@ -336,9 +339,14 @@ function makeCarMesh(spec) {
       k *= 1 - Math.min(1.3, Math.max(0, (y - y1) / Math.max(b.ch, 0.1))) * 0.14;
       // Kotflügel über den Rädern nach aussen wölben
       const low = smooth(y1 + 0.04, y1 - 0.2, y);
-      k += flareF * Math.exp(-(((z - b.wb / 2) / 0.75) ** 2)) * low;
-      k += flareR * Math.exp(-(((z + b.wb / 2) / 0.75) ** 2)) * low;
+      k += flareF * Math.exp(-(((z - zFA) / 0.75) ** 2)) * low;
+      k += flareR * Math.exp(-(((z - zRA) / 0.75) ** 2)) * low;
       x *= k;
+      // 911: Hüften – über dem Hinterrad ist der Kotflügel höher (aussen am stärksten)
+      if (b.haunch) {
+        y += b.haunch * smooth(0.22, 0.42, Math.abs(x) / b.w) * Math.exp(-(((z - zRA) / 0.95) ** 2))
+          * smooth(y1 - 0.4, y1 - 0.02, y) * (y < y1 + 0.02 ? 1 : 0);
+      }
       // 911: vordere Kotflügel liegen höher als die Motorhaube
       if (b.humps) {
         y += b.humps * smooth(0.16, 0.36, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
@@ -376,7 +384,7 @@ function makeCarMesh(spec) {
   const s = new THREE.Shape();
   s.moveTo(-L, y0 + 0.14);
   s.quadraticCurveTo(-L, y0, -L + 0.18, y0);
-  for (const cz of [-b.wb / 2, b.wb / 2]) {
+  for (const cz of [zRA, zFA]) {
     const a = Math.asin(Math.min(0.9, Math.max(0, (y0 - b.wr) / ar)));
     s.lineTo(cz - ar * Math.cos(a), y0);
     s.absarc(cz, b.wr, ar, Math.PI - a, a, true);
@@ -404,7 +412,7 @@ function makeCarMesh(spec) {
     // Die Trennlinie steigt von vorne (niedrig) nach hinten leicht an.
     bodyMat = paint.clone();
     bodyMat.color.set(0xffffff);
-    const yF = (noseY + 0.02).toFixed(3), yR = (y1 - 0.03).toFixed(3), f = (v) => v.toFixed(3);
+    const yF = (noseY + (b.humps || 0) * 0.45).toFixed(3), yR = (y1 - 0.05).toFixed(3), f = (v) => v.toFixed(3);
     bodyMat.onBeforeCompile = (sh) => {
       sh.vertexShader = sh.vertexShader
         .replace("#include <common>", "#include <common>\nvarying vec3 vCarPos;")
@@ -553,12 +561,12 @@ function makeCarMesh(spec) {
   for (const sx of [-1, 1]) {
     if (ex.has("roundLights")) {
       // grosse, runde Scheinwerfer vorne in den Kotflügeln (beim 911 typisch "Froschaugen")
-      const hr = b.humps ? 0.16 : 0.15, tilt = b.humps ? 0.55 : 0.3;
+      const hr = b.humps ? 0.135 : 0.15, tilt = b.humps ? 0.6 : 0.3;
       const hx = sx * b.w * 0.33, hy = noseY - 0.02 + (b.humps || 0) * 0.55;
-      const hz = frontZ(hx, hy) - 0.06;
+      const hz = frontZ(hx, hy) - (b.humps ? 0.1 : 0.06);
       const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
       l.rotation.x = Math.PI / 2 - tilt;
-      const ring = add(new THREE.TorusGeometry(hr + 0.005, 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
+      const ring = add(new THREE.TorusGeometry(hr + 0.005, b.humps ? 0.012 : 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
       ring.rotation.x = -tilt;
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
@@ -664,7 +672,7 @@ function makeCarMesh(spec) {
   if (ex.has("tallWing")) buildWing(0.2, 0.3, b.w * 0.9, accent, accent);    // 22B: in Wagenfarbe, nicht zu hoch
   else if (ex.has("wing")) buildWing(0.4, 0.38, b.w * 0.95, accent, trim);
   if (ex.has("rackPlatform")) {
-    const ry = top + ch + 0.07, depth = b.cl * 1.0;
+    const ry = top + ch + 0.05, depth = b.cl * 0.95;
     for (const z of [-0.35, 0.35]) {
       box(b.w * 0.84, 0.035, 0.05, trim, 0, ry, b.cz + z * depth);              // Querträger
       for (const sx of [-1, 1]) box(0.05, 0.08, 0.06, trim, sx * b.w * 0.36, ry - 0.05, b.cz + z * depth);
@@ -675,11 +683,11 @@ function makeCarMesh(spec) {
     front.rotation.x = -0.4;                                                    // Windabweiser
     // Benzinkanister (hellgrau) und Gepäcktasche (dunkelgrau)
     const can = new THREE.MeshStandardMaterial({ color: 0xbfc2c4, roughness: 0.5, metalness: 0.3 });
-    box(0.32, 0.2, 0.18, can, -b.w * 0.18, ry + 0.15, b.cz + depth * 0.28);
-    box(0.06, 0.04, 0.12, seam, -b.w * 0.18 + 0.1, ry + 0.27, b.cz + depth * 0.28);
-    for (const x of [-0.08, 0, 0.08]) box(0.012, 0.16, 0.185, seam, -b.w * 0.18 + x, ry + 0.15, b.cz + depth * 0.28);
+    box(0.26, 0.15, 0.15, can, b.w * 0.15, ry + 0.12, b.cz + depth * 0.28);
+    box(0.05, 0.03, 0.1, seam, b.w * 0.15 + 0.08, ry + 0.21, b.cz + depth * 0.28);
+    for (const x of [-0.07, 0, 0.07]) box(0.01, 0.12, 0.155, seam, b.w * 0.15 + x, ry + 0.12, b.cz + depth * 0.28);
     const bag = new THREE.MeshStandardMaterial({ color: 0x55585b, roughness: 0.85 });
-    const duffel = add(new THREE.CapsuleGeometry(0.11, 0.32, 6, 12), bag, b.w * 0.16, ry + 0.16, b.cz - depth * 0.15);
+    const duffel = add(new THREE.CapsuleGeometry(0.09, 0.26, 6, 12), bag, -b.w * 0.12, ry + 0.13, b.cz - depth * 0.1);
     duffel.rotation.z = Math.PI / 2;
   }
   if (ex.has("rack")) {
@@ -699,16 +707,16 @@ function makeCarMesh(spec) {
   }
   if (ex.has("cladding")) {
     // schwarze Radlauf-Verbreiterungen und Seitenschweller
-    for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
+    for (const sx of [-1, 1]) for (const cz of [zRA, zFA]) {
       const fl = cz > 0 ? flareF : flareR;
-      const f = add(new THREE.TorusGeometry(ar + 0.02, 0.07, 6, 18, Math.PI), trim, sx * (b.w / 2 * (1 + fl) + 0.02), b.wr, cz);
+      const f = add(new THREE.TorusGeometry(ar + 0.015, b.slimTrim ? 0.03 : 0.07, 6, 18, Math.PI), trim, sx * (b.w / 2 * (1 + fl) + 0.01), b.wr, cz);
       f.rotation.y = Math.PI / 2;
     }
-    for (const sx of [-1, 1]) box(0.08, 0.14, b.wb - 2 * ar - 0.1, trim, sx * (b.w / 2 + 0.02), y0 + 0.1, 0);
+    for (const sx of [-1, 1]) box(b.slimTrim ? 0.04 : 0.08, b.slimTrim ? 0.07 : 0.14, b.wb - 2 * ar - 0.1, trim, sx * (b.w / 2 + 0.01), y0 + (b.slimTrim ? 0.04 : 0.1), 0);
   }
   if (ex.has("flares")) {
     // breite, lackierte Kotflügel-Verbreiterungen (wie beim Impreza 22B)
-    for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
+    for (const sx of [-1, 1]) for (const cz of [zRA, zFA]) {
       const f = add(new THREE.TorusGeometry(ar + 0.03, 0.1, 8, 20, Math.PI), paint, sx * (b.w / 2 + 0.02), b.wr, cz);
       f.rotation.y = Math.PI / 2;
       f.scale.set(1, 1, 0.8);
@@ -716,7 +724,7 @@ function makeCarMesh(spec) {
   }
   if (ex.has("boxFlares")) {
     // eckig ausgestellte Kotflügel: ein Blech mit Radausschnitt, aussen auf die Karosserie gesetzt
-    for (const cz of [-b.wb / 2, b.wb / 2]) {
+    for (const cz of [zRA, zFA]) {
       const fr = ar + 0.02;
       const x0 = cz - fr - 0.3, x1 = cz + fr + 0.3, yb = y0 + 0.05, yt = Math.min(y1 - 0.07, b.wr + fr + 0.1);
       const fs = new THREE.Shape();
@@ -744,7 +752,7 @@ function makeCarMesh(spec) {
     box(0.6, 0.075, 0.03, seam, 0, y1 + 0.015, zs + 0.27);
   }
   if (ex.has("mudflaps")) {
-    for (const sx of [-1, 1]) for (const cz of [-b.wb / 2, b.wb / 2]) {
+    for (const sx of [-1, 1]) for (const cz of [zRA, zFA]) {
       box(b.ww + 0.04, 0.24, 0.012, seam, sx * (b.w / 2 - b.ww / 2 + 0.1), y0 + 0.02, cz - ar - 0.04);
     }
   }
@@ -775,26 +783,31 @@ function makeCarMesh(spec) {
     }
   }
   if (ex.has("livery953")) {
-    const c = document.createElement("canvas");
-    c.width = 640; c.height = 256;
-    const g = c.getContext("2d");
-    g.fillStyle = "#ffffff";
-    g.beginPath(); g.roundRect(6, 30, 230, 196, 26); g.fill();
-    g.fillStyle = "#111";
-    g.font = "900 120px system-ui, sans-serif";
-    g.textAlign = "center"; g.textBaseline = "middle";
-    g.fillText("953", 121, 132);
-    g.textAlign = "left"; g.fillStyle = "#ffffff";
-    g.font = "italic 800 52px system-ui, sans-serif";
-    g.fillText("Roughroad's", 252, 104, 380);
-    g.font = "600 44px system-ui, sans-serif";
-    g.fillText("P O R S C H E", 254, 166, 380);
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    const mat = new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.35 });
-    const ny = y0 + (y1 - y0) * 0.5, nz = Math.min(zf - 1.15, b.wb / 2 - ar - 0.5);
+    // Die Nummer steht auf beiden Seiten vorne, "Roughroads PORSCHE" dahinter
+    const board = (numberLeft) => {
+      const c = document.createElement("canvas");
+      c.width = 640; c.height = 256;
+      const g = c.getContext("2d");
+      const nx = numberLeft ? 6 : 404, tx = numberLeft ? 252 : 14;
+      g.fillStyle = "#ffffff";
+      g.beginPath(); g.roundRect(nx, 30, 230, 196, 20); g.fill();
+      g.fillStyle = "#111";
+      g.font = "900 120px system-ui, sans-serif";
+      g.textAlign = "center"; g.textBaseline = "middle";
+      g.fillText("953", nx + 115, 132);
+      g.textAlign = "left"; g.fillStyle = "#ffffff";
+      g.font = "800 60px system-ui, sans-serif";
+      g.fillText("Roughroads", tx, 104, 375);
+      g.font = "600 44px system-ui, sans-serif";
+      g.fillText("P O R S C H E", tx + 4, 166, 370);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      return new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.35 });
+    };
+    const ny = y0 + (y1 - y0) * 0.5, nz = Math.min(zf - 1.15, zFA - ar - 0.5);
     for (const sx of [-1, 1]) {
-      const pl = add(new THREE.PlaneGeometry(0.86, 0.344), mat, sx * (sideX(ny, nz) + 0.012), ny, nz);
+      // rechts (sx=1) läuft die Schrift nach hinten, links nach vorne -> Bild entsprechend
+      const pl = add(new THREE.PlaneGeometry(0.86, 0.344), board(sx > 0), sx * (sideX(ny, nz) + 0.012), ny, nz);
       pl.rotation.y = sx * Math.PI / 2;
       pl.castShadow = false;
     }
@@ -878,7 +891,7 @@ function makeCarMesh(spec) {
   for (const sz of [1, -1]) for (const sx of [-1, 1]) {
     const pivot = new THREE.Group();
     const axleOut = (b.w / 2) * Math.max(0, (sz > 0 ? flareF : flareR) - 0.02) * 0.9;
-    pivot.position.set(sx * (b.w / 2 - b.ww / 2 + 0.04 + axleOut), b.wr, sz * b.wb / 2);
+    pivot.position.set(sx * (b.w / 2 - b.ww / 2 + 0.04 + axleOut), b.wr, sz > 0 ? zFA : zRA);
     // Bremssattel dreht sich nicht mit, er sitzt fest am Radträger
     const caliper = new THREE.Mesh(caliperGeo, caliperMat);
     caliper.position.set(sx * (b.ww / 2 - 0.07), rIn * 0.42, -rIn * 0.3 * sz);
