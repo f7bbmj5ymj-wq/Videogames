@@ -132,6 +132,49 @@ const CARS = [
   },
 ];
 
+// ---------- Tuning ----------
+// Jedes Teil hat 3 Stufen. Preis für Stufe 1, 2, 3 (Stufe 0 = Serie):
+const TUNE_PRICES = [0, 8000, 18000, 35000];
+const TUNE_LEVELS = ["Serie", "Sport", "Rennsport", "Pro"];
+const UPGRADES = [
+  { key: "engine", name: "Motor", desc: "Mehr PS: höhere Höchstgeschwindigkeit und bessere Beschleunigung.",
+    apply: (s, l) => { s.top *= 1 + 0.04 * l; s.accel *= 1 + 0.06 * l; } },
+  { key: "turbo", name: "Turbo", desc: "Mehr Ladedruck: vor allem bessere Beschleunigung.",
+    apply: (s, l) => { s.accel *= 1 + 0.06 * l; s.top *= 1 + 0.02 * l; } },
+  { key: "tires", name: "Reifen", desc: "Weichere Gummimischung: mehr Grip in Kurven.",
+    apply: (s, l) => { s.grip *= 1 + 0.07 * l; } },
+  { key: "suspension", name: "Fahrwerk", desc: "Bessere Federn und Dämpfer: mehr Grip und besser im Gelände.",
+    apply: (s, l) => { s.grip *= 1 + 0.035 * l; s.off = Math.min(1, s.off + 0.03 * l); } },
+  { key: "weight", name: "Leichtbau", desc: "Weniger Gewicht: spritziger und wendiger.",
+    apply: (s, l) => { s.accel *= 1 + 0.04 * l; s.grip *= 1 + 0.025 * l; } },
+];
+// Optik-Teile: einmal kaufen, danach gratis ein- und ausbauen
+const OPTICS = [
+  { key: "wing", extra: "wing", name: "Heckflügel", price: 5000, desc: "Mehr Abtrieb: etwas mehr Grip.",
+    apply: (s) => { s.grip *= 1.03; s.body.extras.push("wing"); } },
+  { key: "lowered", name: "Tieferlegung", price: 3000, desc: "Tiefer und sportlicher: mehr Grip, aber schlechter im Gelände.",
+    apply: (s) => { s.body.drop = 0.05; s.grip *= 1.03; s.off = Math.max(0.3, s.off - 0.1); } },
+  { key: "lightbar", extra: "lightbar", name: "Zusatzscheinwerfer", price: 2000, desc: "Vier Scheinwerfer auf dem Dach (nur Optik).",
+    apply: (s) => { s.body.extras.push("lightbar"); } },
+];
+const PAINT_PRICE = 1000;
+const PAINTS = [
+  [null, "Werkslack"], [0xf4f4f0, "Weiss"], [0x111214, "Schwarz"], [0x9aa3ad, "Silber"],
+  [0xd0101e, "Rot"], [0xff7a00, "Orange"], [0xffcc00, "Gelb"], [0x2fbf4a, "Grün"],
+  [0x0f5c36, "Racing-Grün"], [0x1c5bd6, "Blau"], [0x0aa6c9, "Türkis"], [0x7a3cff, "Violett"], [0xff4fd8, "Pink"],
+];
+
+// Fahrwerte und Aussehen eines Autos mit seinem Tuning
+// (t = { engine: 2, tires: 1, wing: true, wingOn: true, paint: 0xff0000, ... })
+function tunedSpec(base, t = {}) {
+  const s = { ...base, body: { ...base.body, extras: [...(base.body.extras || [])] } };
+  for (const u of UPGRADES) if (t[u.key]) u.apply(s, t[u.key]);
+  for (const o of OPTICS) if (t[o.key] && t[o.key + "On"] !== false) o.apply(s);
+  if (t.paint != null) s.color = t.paint;
+  s.body.extras = [...new Set(s.body.extras)];
+  return s;
+}
+
 // Leistungsklasse wie bei Festival-Rennspielen (D bis S2) aus den Fahrwerten.
 function carRating(c) {
   return Math.round(100 + c.top * 7 + c.accel * 18 + c.grip * 22);
@@ -386,6 +429,9 @@ function makeCarMesh(spec) {
     box(b.w * 0.75, 0.07, 0.07, trim, 0, y0 + 0.2, L + 0.2);
     for (const sx of [-1, 1]) box(0.07, (y1 - y0) * 0.7, 0.07, trim, sx * b.w * 0.3, y0 + (y1 - y0) * 0.5, L + 0.2);
   }
+
+  // Tieferlegung: die ganze Karosserie sinkt, die Räder bleiben
+  if (b.drop) for (const part of group.children) part.position.y -= b.drop;
 
   // --- Räder: pivot (lenkt) -> spin (dreht sich) -> Reifen + Felge ---
   const tireGeo = new THREE.CylinderGeometry(b.wr, b.wr, b.ww, 32);

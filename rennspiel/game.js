@@ -61,7 +61,7 @@ function loadSave() {
   try { return JSON.parse(localStorage.getItem("alpenfestival") || "{}"); } catch { return {}; }
 }
 const save = Object.assign(
-  { credits: 0, skillPoints: 0, wins: 0, races: 0, bestRace: null, traps: {}, bestDrift: 0, car: "dakar" },
+  { credits: 0, skillPoints: 0, wins: 0, races: 0, bestRace: null, traps: {}, bestDrift: 0, car: "dakar", tuning: {}, bonus: false },
   loadSave()
 );
 function storeSave() {
@@ -881,8 +881,13 @@ const driftZone = (() => {
 // =====================================================================
 // 7. Spieler-Auto & Fahrphysik
 // =====================================================================
-let carSpec = CARS.find((c) => c.id === save.car) || CARS[0];
+let carBase = CARS.find((c) => c.id === save.car) || CARS[0]; // Auto ohne Tuning
+let carSpec = carBase;                                            // Auto mit Tuning (damit wird gefahren)
 let playerMesh = null;
+function tuningOf(id) {
+  save.tuning[id] = save.tuning[id] || {};
+  return save.tuning[id];
+}
 
 const car = {
   x: 0, y: 0, z: 0, yaw: 0, vx: 0, vz: 0, vy: 0,
@@ -891,15 +896,20 @@ const car = {
   wheelSpin: 0, throttle: 0, braking: false,
 };
 
-function setPlayerCar(spec) {
-  carSpec = spec;
-  save.car = spec.id;
+function setPlayerCar(base) {
+  carBase = base;
+  carSpec = tunedSpec(base, tuningOf(base.id));
+  save.car = base.id;
   storeSave();
+  showCarMesh(carSpec);
+}
+// Nur das Aussehen tauschen (z. B. Farbvorschau in der Werkstatt)
+function showCarMesh(spec) {
   if (playerMesh) scene.remove(playerMesh.group);
   playerMesh = makeCarMesh(spec);
   scene.add(playerMesh.group);
 }
-setPlayerCar(carSpec);
+setPlayerCar(carBase);
 
 function placeCar(roadId, s, lane) {
   const p = roadPointAt(roads[roadId], s);
@@ -1053,8 +1063,9 @@ function updateAI(ai, dt, frozen) {
   const idx = Math.floor((((ai.s % L) + L) % L) / road.spacing);
   // Wunschtempo: Höchsttempo, aber vor Kurven rechtzeitig bremsen
   const lat = 7.5 + ai.spec.grip * 0.3;
-  // Im Rennen fahren die Gegner ungefähr so schnell wie dein Auto (wie Klassen-Rennen)
-  let target = ai.racing ? Math.min(ai.spec.top, carSpec.top * 1.02) * ai.skill : ai.spec.top * 0.55;
+  // Im Rennen fahren die Gegner ungefähr so schnell wie dein Auto OHNE Tuning –
+  // so bringt Tuning einen echten Vorteil.
+  let target = ai.racing ? Math.min(ai.spec.top, carBase.top * 1.02) * ai.skill : ai.spec.top * 0.55;
   if (ai.racing && race.state === "running") {
     // Gummiband: wer weit zurück liegt, gibt etwas mehr Gas
     const gap = playerRaceProgress() - ai.s;
@@ -1343,12 +1354,13 @@ const cam = { yaw: 0, mode: 0, shake: 0, pos: new THREE.Vector3(), orbit: 0 };
 function updateCamera(dt) {
   const speed = Math.hypot(car.vx, car.vz);
   const fx = Math.sin(car.yaw), fz = Math.cos(car.yaw);
-  if (mode === "title" || mode === "garage") {
+  if (mode === "title" || mode === "garage" || mode === "tuning") {
+    const menu = mode !== "title";
     cam.orbit += dt * 0.25;
-    const r = mode === "garage" ? 7.5 : 11;
-    camera.position.set(car.x + Math.sin(cam.orbit) * r, car.y + (mode === "garage" ? 2.2 : 3.5), car.z + Math.cos(cam.orbit) * r);
-    // in der Garage das Auto etwas nach rechts schieben, weil links die Liste ist
-    const side = mode === "garage" ? 1.6 : 0;
+    const r = menu ? 7.5 : 11;
+    camera.position.set(car.x + Math.sin(cam.orbit) * r, car.y + (menu ? 2.2 : 3.5), car.z + Math.cos(cam.orbit) * r);
+    // in Garage/Werkstatt das Auto etwas nach rechts schieben, weil links die Liste ist
+    const side = menu ? 1.6 : 0;
     camera.lookAt(car.x - Math.cos(cam.orbit) * side, car.y + 0.9, car.z + Math.sin(cam.orbit) * side);
     camera.fov = 55;
   } else if (cam.mode === 0) {
@@ -1484,7 +1496,7 @@ function gearInfo() {
 // =====================================================================
 // 12. HUD & Menüs
 // =====================================================================
-let mode = "title"; // title | drive | pause | results | garage
+let mode = "title"; // title | drive | pause | results | garage | tuning
 let garageBack = "title";
 
 function setMode(m) {
@@ -1493,9 +1505,11 @@ function setMode(m) {
   $("pause").classList.toggle("hidden", m !== "pause");
   $("results").classList.toggle("hidden", m !== "results");
   $("garage").classList.toggle("hidden", m !== "garage");
-  $("hud").classList.toggle("hidden", m === "title" || m === "garage");
+  $("tuning").classList.toggle("hidden", m !== "tuning");
+  $("hud").classList.toggle("hidden", m === "title" || m === "garage" || m === "tuning");
   if (m === "pause") renderStats();
   if (m === "garage") renderGarage();
+  if (m === "tuning") renderTuning();
 }
 
 function notify(text, cls) {
@@ -1524,16 +1538,18 @@ function renderStats() {
 let garageSel = 0;
 function renderGarage() {
   const list = $("car-list");
-  list.innerHTML = CARS.map((c, i) => {
+  list.innerHTML = CARS.map((base, i) => {
+    const c = tunedSpec(base, tuningOf(base.id));
     const cl = carClass(c);
     const col = "#" + c.color.toString(16).padStart(6, "0");
+    const tuned = carRating(c) !== carRating(base);
     return `<div class="car-item ${i === garageSel ? "sel" : ""}" data-i="${i}">
       <div class="swatch" style="background:${col}"></div>
-      <div class="name">${c.name}<br><small style="opacity:.7;font-weight:400">${c.kind}${c.id === carSpec.id ? " · gewählt" : ""}</small></div>
+      <div class="name">${c.name}<br><small style="opacity:.7;font-weight:400">${c.kind}${tuned ? " · getunt" : ""}${c.id === carSpec.id ? " · gewählt" : ""}</small></div>
       <div class="pi" style="background:${cl.color}">${cl.name} ${carRating(c)}</div>
     </div>`;
   }).join("");
-  const c = CARS[garageSel];
+  const c = tunedSpec(CARS[garageSel], tuningOf(CARS[garageSel].id));
   const bar = (label, v) => `<div class="bar"><span>${label}</span><div><i style="width:${clamp(v, 0.05, 1) * 100}%"></i></div></div>`;
   $("car-bars").innerHTML =
     bar(`Tempo ${Math.round(kmh(c.top))} km/h`, (c.top - 40) / 55) +
@@ -1557,14 +1573,170 @@ function previewCar() {
 function openGarage() {
   if (race.state !== "none") { notify("Während eines Rennens geht das nicht", "red"); return; }
   garageBack = mode === "title" ? "title" : "drive";
-  garageSel = CARS.indexOf(carSpec);
+  garageSel = CARS.indexOf(carBase);
   car.vx = car.vz = car.vF = car.vS = 0;
   setMode("garage");
 }
 function chooseCar() {
   setPlayerCar(CARS[garageSel]);
   notify(`${carSpec.name} ausgewählt`, "gold");
-  setMode(garageBack === "title" ? "drive" : garageBack);
+  if (garageBack === "title") startDriving();
+  else setMode(garageBack);
+}
+
+// --- Tuning-Werkstatt ---
+// Zeilen: zuerst die Leistungsteile, dann Optik, ganz unten die Lackierung
+let tuneSel = 0, paintSel = 0, tuneBack = "drive";
+const TUNE_ROWS = UPGRADES.length + OPTICS.length + 1;
+const PAINT_ROW = TUNE_ROWS - 1;
+const hex = (c) => "#" + c.toString(16).padStart(6, "0");
+
+function openTuning(back) {
+  if (race.state !== "none") { notify("Während eines Rennens geht das nicht", "red"); return; }
+  tuneBack = back || (mode === "garage" ? "garage" : "drive");
+  car.vx = car.vz = car.vF = car.vS = 0;
+  const t = tuningOf(carBase.id);
+  paintSel = Math.max(0, PAINTS.findIndex(([c]) => c === (t.paint ?? null)));
+  setMode("tuning");
+}
+function closeTuning() {
+  setPlayerCar(carBase); // Farbvorschau zurücksetzen
+  setMode(tuneBack);
+}
+
+// Wie sähe das Auto aus, wenn die gewählte Zeile gekauft würde?
+function tunePreview() {
+  const t = tuningOf(carBase.id);
+  if (tuneSel < UPGRADES.length) {
+    const u = UPGRADES[tuneSel];
+    return tunedSpec(carBase, { ...t, [u.key]: Math.min(3, (t[u.key] || 0) + 1) });
+  }
+  if (tuneSel < PAINT_ROW) {
+    const o = OPTICS[tuneSel - UPGRADES.length];
+    const on = !!t[o.key] && t[o.key + "On"] !== false;
+    return tunedSpec(carBase, { ...t, [o.key]: true, [o.key + "On"]: !on });
+  }
+  return tunedSpec(carBase, { ...t, paint: PAINTS[paintSel][0] });
+}
+
+function renderTuning() {
+  const t = tuningOf(carBase.id);
+  const cl = carClass(carSpec);
+  $("tune-head").innerHTML = `${carBase.name} <span class="pi" style="background:${cl.color}">${cl.name} ${carRating(carSpec)}</span>`;
+  $("tune-money").textContent = `${fmt(save.credits)} CHF`;
+  const row = (i, name, sub, right, cls = "") =>
+    `<div class="tune-row ${i === tuneSel ? "sel" : ""} ${cls}" data-i="${i}"><div class="name">${name}<small>${sub}</small></div>${right}</div>`;
+  let html = '<div class="tune-label">Leistung</div>';
+  UPGRADES.forEach((u, i) => {
+    const lvl = t[u.key] || 0;
+    const pips = `<div class="pips">${[1, 2, 3].map((k) => `<i class="${k <= lvl ? "on" : ""}"></i>`).join("")}</div>`;
+    const price = lvl >= 3 ? '<div class="price max">MAX</div>'
+      : `<div class="price ${save.credits >= TUNE_PRICES[lvl + 1] ? "" : "no"}">${fmt(TUNE_PRICES[lvl + 1])} CHF</div>`;
+    html += row(i, u.name, `${TUNE_LEVELS[lvl]}${lvl < 3 ? " → " + TUNE_LEVELS[lvl + 1] : ""}`, pips + price);
+  });
+  html += '<div class="tune-label">Optik</div>';
+  OPTICS.forEach((o, k) => {
+    if (o.extra && carBase.body.extras.includes(o.extra)) {
+      html += row(UPGRADES.length + k, o.name, "schon serienmässig dabei", '<div class="price max">Serie</div>');
+      return;
+    }
+    const owned = !!t[o.key], on = owned && t[o.key + "On"] !== false;
+    const right = owned ? `<div class="price">${on ? "Ausbauen" : "Einbauen"}</div>`
+      : `<div class="price ${save.credits >= o.price ? "" : "no"}">${fmt(o.price)} CHF</div>`;
+    html += row(UPGRADES.length + k, o.name, owned ? (on ? "eingebaut" : "gekauft") : "nicht gekauft", right);
+  });
+  html += '<div class="tune-label">Lackierung</div>';
+  const sw = PAINTS.map(([c, name], k) =>
+    `<span class="sw ${k === paintSel ? "sel" : ""}" data-p="${k}" title="${name}" style="background:${hex(c ?? carBase.color)}"></span>`).join("");
+  const current = (t.paint ?? null) === PAINTS[paintSel][0];
+  const paintInfo = current ? "aktuelle Farbe" : paintSel === 0 ? "gratis" : `${fmt(PAINT_PRICE)} CHF`;
+  html += row(PAINT_ROW, PAINTS[paintSel][1], `${paintInfo} · ← → Farbe wählen`,
+    "", "paint") + `<div class="swatches">${sw}</div>`;
+  $("tune-list").innerHTML = html;
+
+  // Balken: jetzt (gelb) und nach dem Kauf (grün)
+  const prev = tunePreview();
+  const bar = (label, a, b) => `<div class="bar"><span>${label}</span><div><b style="width:${clamp(b, 0.03, 1) * 100}%"></b><i style="width:${clamp(a, 0.03, 1) * 100}%"></i></div></div>`;
+  $("tune-bars").innerHTML =
+    bar(`Tempo ${Math.round(kmh(carSpec.top))} km/h`, (carSpec.top - 40) / 70, (prev.top - 40) / 70) +
+    bar("Beschleunigung", (carSpec.accel - 6) / 18, (prev.accel - 6) / 18) +
+    bar("Grip", (carSpec.grip - 4) / 7, (prev.grip - 4) / 7) +
+    bar("Gelände", carSpec.off, prev.off);
+  const pc = carClass(prev);
+  const desc = tuneSel < UPGRADES.length ? UPGRADES[tuneSel].desc
+    : tuneSel < PAINT_ROW ? OPTICS[tuneSel - UPGRADES.length].desc : "Neue Farbe für dein Auto.";
+  $("tune-desc").innerHTML = `${desc}<br><span style="opacity:.75">Danach: Klasse ${pc.name} ${carRating(prev)}</span>`;
+  $("tune-list").querySelector(tuneSel === PAINT_ROW ? ".swatches" : ".sel")?.scrollIntoView({ block: "nearest" });
+
+  // In der Lackier-Zeile die Farbe gleich am Auto zeigen
+  showCarMesh(tuneSel === PAINT_ROW ? prev : carSpec);
+}
+
+function buyTuning() {
+  const t = tuningOf(carBase.id);
+  let price, apply, label;
+  if (tuneSel < UPGRADES.length) {
+    const u = UPGRADES[tuneSel], lvl = t[u.key] || 0;
+    if (lvl >= 3) { notify(`${u.name} ist schon auf Maximum`, ""); return; }
+    price = TUNE_PRICES[lvl + 1];
+    apply = () => { t[u.key] = lvl + 1; };
+    label = `${u.name}: ${TUNE_LEVELS[lvl + 1]} eingebaut!`;
+  } else if (tuneSel < PAINT_ROW) {
+    const o = OPTICS[tuneSel - UPGRADES.length];
+    if (o.extra && carBase.body.extras.includes(o.extra)) { notify(`${o.name}: hat dieses Auto schon ab Werk`, ""); return; }
+    if (t[o.key]) {
+      // schon gekauft: gratis ein- oder ausbauen
+      const on = t[o.key + "On"] !== false;
+      t[o.key + "On"] = !on;
+      setPlayerCar(carBase);
+      notify(`${o.name} ${on ? "ausgebaut" : "eingebaut"}`, "");
+      renderTuning();
+      return;
+    }
+    price = o.price;
+    apply = () => { t[o.key] = true; t[o.key + "On"] = true; };
+    label = `${o.name} eingebaut!`;
+  } else {
+    const [c, name] = PAINTS[paintSel];
+    if ((t.paint ?? null) === c) { notify("Das Auto hat schon diese Farbe", ""); return; }
+    price = paintSel === 0 ? 0 : PAINT_PRICE;
+    apply = () => { t.paint = c; };
+    label = `Neu lackiert: ${name}!`;
+  }
+  if (save.credits < price) {
+    notify(`Zu wenig Geld: Dir fehlen noch ${fmt(price - save.credits)} CHF`, "red");
+    return;
+  }
+  const before = carClass(carSpec).name;
+  save.credits -= price;
+  apply();
+  setPlayerCar(carBase); // speichert auch
+  const after = carClass(carSpec).name;
+  notify(`${label}${price ? `  −${fmt(price)} CHF` : ""}${after !== before ? `  ·  Klasse ${before} → ${after}` : ""}`, "gold");
+  renderTuning();
+}
+
+$("tune-list").addEventListener("click", (e) => {
+  const swatch = e.target.closest(".sw");
+  if (swatch) { tuneSel = PAINT_ROW; paintSel = Number(swatch.dataset.p); renderTuning(); return; }
+  const r = e.target.closest(".tune-row");
+  if (!r) return;
+  const i = Number(r.dataset.i);
+  if (i === tuneSel) buyTuning();
+  else { tuneSel = i; renderTuning(); }
+});
+$("tune-buy").addEventListener("click", () => buyTuning());
+
+// Startbonus, damit man die Werkstatt gleich ausprobieren kann
+function startDriving() {
+  setMode("drive");
+  notify("Grüezi! Willkommen beim Alpenfestival!", "");
+  if (!save.bonus) {
+    save.bonus = true;
+    save.credits += 25000;
+    storeSave();
+    notify("Startbonus: 25'000 CHF für die Tuning-Werkstatt (Taste T)", "gold");
+  }
 }
 
 // --- Speedometer ---
@@ -1715,9 +1887,21 @@ addEventListener("keydown", (e) => {
   if (audio && audio.ctx.state === "suspended") audio.ctx.resume();
 
   if (mode === "title") {
-    if (e.code === "Enter") { setMode("drive"); notify("Grüezi! Willkommen beim Alpenfestival!", ""); }
+    if (e.code === "Enter") startDriving();
     if (e.code === "KeyG") openGarage();
+  } else if (mode === "tuning") {
+    if (e.code === "ArrowUp" || e.code === "KeyW") { tuneSel = (tuneSel - 1 + TUNE_ROWS) % TUNE_ROWS; renderTuning(); }
+    if (e.code === "ArrowDown" || e.code === "KeyS") { tuneSel = (tuneSel + 1) % TUNE_ROWS; renderTuning(); }
+    if ((e.code === "ArrowLeft" || e.code === "KeyA" || e.code === "ArrowRight" || e.code === "KeyD")) {
+      tuneSel = PAINT_ROW;
+      const d = e.code === "ArrowLeft" || e.code === "KeyA" ? -1 : 1;
+      paintSel = (paintSel + d + PAINTS.length) % PAINTS.length;
+      renderTuning();
+    }
+    if (e.code === "Enter" || e.code === "Space") buyTuning();
+    if (e.code === "Escape" || e.code === "KeyT") closeTuning();
   } else if (mode === "garage") {
+    if (e.code === "KeyT") { setPlayerCar(CARS[garageSel]); openTuning("garage"); }
     if (e.code === "ArrowUp" || e.code === "KeyW") { garageSel = (garageSel - 1 + CARS.length) % CARS.length; previewCar(); }
     if (e.code === "ArrowDown" || e.code === "KeyS") { garageSel = (garageSel + 1) % CARS.length; previewCar(); }
     if (e.code === "Enter") chooseCar();
@@ -1727,6 +1911,7 @@ addEventListener("keydown", (e) => {
   } else if (mode === "pause") {
     if (e.code === "Escape") setMode("drive");
     if (e.code === "KeyG") openGarage();
+    if (e.code === "KeyT") openTuning("drive");
     if (e.code === "Backspace") { abortRace(); setMode("drive"); }
   } else if (mode === "drive") {
     if (e.code === "Escape") setMode("pause");
@@ -1734,6 +1919,7 @@ addEventListener("keydown", (e) => {
     if (e.code === "KeyM") muted = !muted;
     if (e.code === "KeyR" && race.state !== "countdown") resetToRoad();
     if (e.code === "KeyG") openGarage();
+    if (e.code === "KeyT") openTuning("drive");
     if (e.code === "Backspace") abortRace();
     if (e.code === "Enter" && race.state === "none" && nearRaceStart() && Math.hypot(car.vx, car.vz) < 8) startRace();
   }
@@ -1743,8 +1929,7 @@ addEventListener("keyup", (e) => { keys[e.code] = false; });
 $("title").addEventListener("click", () => {
   window.focus();
   initAudio();
-  setMode("drive");
-  notify("Grüezi! Willkommen beim Alpenfestival!", "");
+  startDriving();
 });
 addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
 
@@ -1829,7 +2014,7 @@ function update(dt) {
   water.material.normalMap.offset.x += dt * 0.004;
   water.material.normalMap.offset.y += dt * 0.0025;
   updateCamera(dt);
-  if (mode !== "title" && mode !== "garage") updateHUD(kmh(Math.abs(car.vF)), gi.gear, gi.rpm);
+  if (mode !== "title" && mode !== "garage" && mode !== "tuning") updateHUD(kmh(Math.abs(car.vF)), gi.gear, gi.rpm);
 }
 
 placeCar(0, -40, -3);
@@ -1849,4 +2034,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Für Tests in der Browser-Konsole
-window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam };
+window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam, openTuning, buyTuning, get carSpec() { return carSpec; } };

@@ -122,8 +122,8 @@
     .results tr.me td { background: rgba(255,46,136,.3); }
 
     /* ---------- Garage ---------- */
-    #garage { background: none; justify-content: flex-start; align-items: stretch; }
-    #garage .panel {
+    #garage, #tuning { background: none; justify-content: flex-start; align-items: stretch; }
+    #garage .panel, #tuning .panel {
       width: 380px; max-width: calc(100% - 32px); margin: 16px; border-top-color: #ffd23f;
       display: flex; flex-direction: column;
     }
@@ -143,6 +143,38 @@
     .bar div { flex: 1; height: 8px; background: rgba(255,255,255,.12); border-radius: 4px; overflow: hidden; }
     .bar i { display: block; height: 100%; background: linear-gradient(90deg, #ff8a00, #ffd23f); }
     #car-desc { font-size: 14px; opacity: .85; min-height: 40px; }
+
+    /* ---------- Tuning-Werkstatt ---------- */
+    #tuning .panel { border-top-color: #19c3ff; }
+    #tune-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    #tune-money { color: #ffd23f; font-weight: 800; font-style: italic; margin: -8px 0 8px; }
+    #tune-list { overflow-y: auto; flex: 1; margin: 0 -8px; padding: 0 8px; }
+    .tune-label { font-size: 11px; letter-spacing: .12em; text-transform: uppercase; opacity: .6; margin: 10px 0 4px; }
+    .tune-row {
+      display: flex; align-items: center; gap: 10px; cursor: pointer;
+      padding: 7px 10px; margin-bottom: 3px; border-radius: 4px; background: rgba(255,255,255,.05);
+    }
+    .tune-row.sel { background: rgba(25,195,255,.2); outline: 2px solid #19c3ff; }
+    .tune-row .name { flex: 1; font-weight: 700; }
+    .tune-row .name small { display: block; font-weight: 400; opacity: .7; }
+    .pips { display: flex; gap: 3px; }
+    .pips i { width: 14px; height: 6px; border-radius: 2px; background: rgba(255,255,255,.18); }
+    .pips i.on { background: #19c3ff; }
+    .price { font-weight: 800; font-size: 13px; color: #ffd23f; min-width: 82px; text-align: right; font-variant-numeric: tabular-nums; }
+    .price.no { color: #ff6b6b; }
+    .price.max { color: #7bd389; }
+    .swatches { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 2px 2px; }
+    .sw { width: 22px; height: 22px; border-radius: 50%; cursor: pointer; border: 2px solid rgba(255,255,255,.35); }
+    .sw.sel { border-color: #fff; box-shadow: 0 0 0 2px #19c3ff; }
+    .bar div { position: relative; }
+    .bar b { position: absolute; left: 0; top: 0; bottom: 0; background: #7bd389; border-radius: 4px; }
+    .bar i { position: relative; }
+    #tune-desc { font-size: 14px; opacity: .9; min-height: 40px; }
+    #tune-buy {
+      margin-top: 10px; padding: 10px; border: 0; border-radius: 4px; cursor: pointer;
+      background: linear-gradient(90deg, #1f6fff, #19c3ff); color: #fff; font: inherit; font-weight: 800; font-style: italic;
+    }
+    #tune-buy:focus-visible { outline: 2px solid #fff; }
   </style>
 </head>
 <body>
@@ -161,7 +193,7 @@
     </div>
     <div id="prompt" class="hidden"></div>
     <div id="countdown" class="hidden"></div>
-    <div id="hint">Esc: Menü · G: Garage · C: Kamera · R: Zurück auf die Strasse · M: Ton</div>
+    <div id="hint">Esc: Menü · G: Garage · T: Tuning · C: Kamera · R: Zurück auf die Strasse · M: Ton</div>
   </div>
   <div id="notes"></div>
 
@@ -176,6 +208,7 @@
         <tr><td>A D / ← →</td><td>Lenken</td></tr>
         <tr><td>Leertaste</td><td>Handbremse (driften!)</td></tr>
         <tr><td>G</td><td>Garage (11 Autos, z. B. Porsche 911 Dakar)</td></tr>
+        <tr><td>T</td><td>Tuning-Werkstatt (Motor, Turbo, Reifen, Lack …)</td></tr>
         <tr><td>C</td><td>Kamera wechseln</td></tr>
         <tr><td>R</td><td>Zurück auf die Strasse</td></tr>
         <tr><td>Enter</td><td>Event starten (im blauen Lichtstrahl)</td></tr>
@@ -194,7 +227,7 @@
         Blauer Lichtstrahl = Rennen · Orange Tore = Driftzone · Lila Kameras = Blitzer<br>
         Skill-Ketten: Driften, Springen, Rasen und knapp an Autos vorbeifahren. Nicht crashen!
       </div>
-      <div class="go">Esc: Weiterfahren · G: Garage · Backspace: Rennen abbrechen</div>
+      <div class="go">Esc: Weiterfahren · G: Garage · T: Tuning · Backspace: Rennen abbrechen</div>
     </div>
   </div>
 
@@ -208,6 +241,19 @@
     </div>
   </div>
 
+  <!-- Tuning-Werkstatt -->
+  <div id="tuning" class="overlay hidden">
+    <div class="panel">
+      <h2 id="tune-head">Tuning</h2>
+      <div id="tune-money"></div>
+      <div id="tune-list"></div>
+      <div class="bars" id="tune-bars"></div>
+      <div id="tune-desc"></div>
+      <button id="tune-buy" type="button">Kaufen / Einbauen (Enter)</button>
+      <div class="go" style="font-size:15px">↑ ↓ Teil wählen · ← → Farbe · Esc zurück</div>
+    </div>
+  </div>
+
   <!-- Garage -->
   <div id="garage" class="overlay hidden">
     <div class="panel">
@@ -215,7 +261,7 @@
       <div id="car-list"></div>
       <div class="bars" id="car-bars"></div>
       <div id="car-desc"></div>
-      <div class="go" style="font-size:15px">↑ ↓ auswählen · Enter fahren · Esc zurück</div>
+      <div class="go" style="font-size:15px">↑ ↓ auswählen · Enter fahren · T Tuning · Esc zurück</div>
     </div>
   </div>
 
