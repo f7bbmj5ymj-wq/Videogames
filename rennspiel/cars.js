@@ -19,16 +19,17 @@ const CARS = [
     id: "dakar",
     name: "Porsche 911 Dakar",
     kind: "Gelände-Sportwagen",
-    color: 0xf4f4f0,
-    accent: 0x1c5bd6,
-    rim: 0xf2f2f0,            // weisse Felgen (Rallye-Paket)
+    color: 0xd4d6d8,          // silber (oben); unten blau, siehe "livery953"
+    accent: 0x13235f,
+    rim: 0xd9dadb,            // silberne Felgen …
+    spokes: 5, spokeW: 0.17,  // … mit 5 breiten Speichen
     offroadTires: true,       // grobstollige Geländereifen
-    desc: "Höhergelegter 911 mit Dachträger und Zusatzscheinwerfern. Schnell auf der Strasse – und abseits davon unschlagbar.",
+    desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
     body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.47, cl: 1.2, cz: -0.12, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.9,
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       humps: 0.17, flareF: 0.035, flareR: 0.09,    // Kotflügel vorne höher als die Haube, breite "Hüften" hinten
-      extras: ["fastback", "flyline", "rack", "lightbar", "cladding", "roundLights", "rallye", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
+      extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
     id: "impreza22b",
@@ -37,7 +38,7 @@ const CARS = [
     color: 0x1d3b8f,          // "Sonic Blue Mica"
     accent: 0x1d3b8f,
     rim: 0xc9a23a,            // goldene Felgen
-    spokes: 8,                // viele feine Speichen
+    spokes: 16,               // viele feine Speichen
     caliper: 0xc0262d,        // rote Bremssättel
     desc: "Die Rallye-Legende von 1998: Allradantrieb, breite Kotflügel, goldene Felgen und grosser Heckflügel. Auf Schotter und Gras kaum zu schlagen.",
     top: 69, accel: 13.6, grip: 6.8, off: 0.9,
@@ -189,7 +190,10 @@ function tunedSpec(base, t = {}) {
   const s = { ...base, body: { ...base.body, extras: [...(base.body.extras || [])] } };
   for (const u of UPGRADES) if (t[u.key]) u.apply(s, t[u.key]);
   for (const o of OPTICS) if (t[o.key] && t[o.key + "On"] !== false) o.apply(s);
-  if (t.paint != null) s.color = t.paint;
+  if (t.paint != null) {
+    s.color = t.paint;
+    s.body.extras = s.body.extras.filter((e) => e !== "livery953"); // neue Farbe ersetzt das Rallye-Design
+  }
   s.body.extras = [...new Set(s.body.extras)];
   return s;
 }
@@ -394,7 +398,31 @@ function makeCarMesh(spec) {
     s.quadraticCurveTo(-L, y1, -L, y1 - 0.2);
   }
   s.closePath();
-  const bodyMesh = extrude(s, b.w, paint, 0.1, true);
+  let bodyMat = paint;
+  if (ex.has("livery953")) {
+    // Unten Dunkelblau, oben Silber, dazwischen ein goldener und ein roter Streifen.
+    // Die Trennlinie steigt von vorne (niedrig) nach hinten leicht an.
+    bodyMat = paint.clone();
+    bodyMat.color.set(0xffffff);
+    const yF = (noseY + 0.02).toFixed(3), yR = (y1 - 0.03).toFixed(3), f = (v) => v.toFixed(3);
+    bodyMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCarPos;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCarPos = position;");
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCarPos;")
+        .replace("vec4 diffuseColor = vec4( diffuse, opacity );", `
+          float lineY = mix(${yR}, ${yF}, clamp((vCarPos.z + ${f(L)}) / ${f(2 * L)}, 0.0, 1.0));
+          float d = vCarPos.y - lineY;
+          vec3 silver = vec3(0.64, 0.66, 0.68);
+          vec3 blue = vec3(0.008, 0.016, 0.1);
+          vec3 gold = vec3(0.55, 0.34, 0.12);
+          vec3 red = vec3(0.6, 0.012, 0.025);
+          vec3 col = d < 0.0 ? blue : d < 0.024 ? gold : d < 0.036 ? silver : d < 0.06 ? red : silver;
+          vec4 diffuseColor = vec4(col, opacity);`);
+    };
+  }
+  const bodyMesh = extrude(s, b.w, bodyMat, 0.1, true);
   // Wo liegt die Seitenwand wirklich? Ein Messstrahl von aussen findet die Oberfläche,
   // damit Aufkleber, Türfugen und Griffe genau darauf sitzen.
   const ray = new THREE.Raycaster();
@@ -635,6 +663,25 @@ function makeCarMesh(spec) {
   };
   if (ex.has("tallWing")) buildWing(0.2, 0.3, b.w * 0.9, accent, accent);    // 22B: in Wagenfarbe, nicht zu hoch
   else if (ex.has("wing")) buildWing(0.4, 0.38, b.w * 0.95, accent, trim);
+  if (ex.has("rackPlatform")) {
+    const ry = top + ch + 0.07, depth = b.cl * 1.0;
+    for (const z of [-0.35, 0.35]) {
+      box(b.w * 0.84, 0.035, 0.05, trim, 0, ry, b.cz + z * depth);              // Querträger
+      for (const sx of [-1, 1]) box(0.05, 0.08, 0.06, trim, sx * b.w * 0.36, ry - 0.05, b.cz + z * depth);
+    }
+    box(b.w * 0.8, 0.025, depth, trim, 0, ry + 0.035, b.cz);                    // Plattform
+    for (const sx of [-1, 1]) box(0.03, 0.06, depth, trim, sx * b.w * 0.4, ry + 0.07, b.cz);
+    const front = box(b.w * 0.8, 0.07, 0.03, trim, 0, ry + 0.07, b.cz + depth / 2);
+    front.rotation.x = -0.4;                                                    // Windabweiser
+    // Benzinkanister (hellgrau) und Gepäcktasche (dunkelgrau)
+    const can = new THREE.MeshStandardMaterial({ color: 0xbfc2c4, roughness: 0.5, metalness: 0.3 });
+    box(0.32, 0.2, 0.18, can, -b.w * 0.18, ry + 0.15, b.cz + depth * 0.28);
+    box(0.06, 0.04, 0.12, seam, -b.w * 0.18 + 0.1, ry + 0.27, b.cz + depth * 0.28);
+    for (const x of [-0.08, 0, 0.08]) box(0.012, 0.16, 0.185, seam, -b.w * 0.18 + x, ry + 0.15, b.cz + depth * 0.28);
+    const bag = new THREE.MeshStandardMaterial({ color: 0x55585b, roughness: 0.85 });
+    const duffel = add(new THREE.CapsuleGeometry(0.11, 0.32, 6, 12), bag, b.w * 0.16, ry + 0.16, b.cz - depth * 0.15);
+    duffel.rotation.z = Math.PI / 2;
+  }
   if (ex.has("rack")) {
     const ry = top + ch + 0.16;
     for (const sx of [-1, 1]) box(0.05, 0.05, b.cl * 0.85, trim, sx * b.w * 0.38, ry, b.cz);
@@ -727,6 +774,31 @@ function makeCarMesh(spec) {
       l.rotation.x = Math.PI / 2;
     }
   }
+  if (ex.has("livery953")) {
+    const c = document.createElement("canvas");
+    c.width = 640; c.height = 256;
+    const g = c.getContext("2d");
+    g.fillStyle = "#ffffff";
+    g.beginPath(); g.roundRect(6, 30, 230, 196, 26); g.fill();
+    g.fillStyle = "#111";
+    g.font = "900 120px system-ui, sans-serif";
+    g.textAlign = "center"; g.textBaseline = "middle";
+    g.fillText("953", 121, 132);
+    g.textAlign = "left"; g.fillStyle = "#ffffff";
+    g.font = "italic 800 52px system-ui, sans-serif";
+    g.fillText("Roughroad's", 252, 104, 380);
+    g.font = "600 44px system-ui, sans-serif";
+    g.fillText("P O R S C H E", 254, 166, 380);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const mat = new THREE.MeshStandardMaterial({ map: t, transparent: true, roughness: 0.35 });
+    const ny = y0 + (y1 - y0) * 0.5, nz = Math.min(zf - 1.15, b.wb / 2 - ar - 0.5);
+    for (const sx of [-1, 1]) {
+      const pl = add(new THREE.PlaneGeometry(0.86, 0.344), mat, sx * (sideX(ny, nz) + 0.012), ny, nz);
+      pl.rotation.y = sx * Math.PI / 2;
+      pl.castShadow = false;
+    }
+  }
   if (ex.has("rallye")) {
     // Dakar-Rallye-Design: blaue und rote Streifen unten, Startnummer auf der Tür
     const blue = new THREE.MeshStandardMaterial({ color: 0x1c5bd6, roughness: 0.4 });
@@ -789,8 +861,13 @@ function makeCarMesh(spec) {
   const discGeo = new THREE.CylinderGeometry(rIn * 0.85, rIn * 0.85, 0.025, 28);
   discGeo.rotateZ(Math.PI / 2);
   const caliperGeo = new THREE.BoxGeometry(0.07, rIn * 0.55, rIn * 0.75);
-  const nSpokes = spec.spokes || 5;
-  const spokeGeo = new THREE.BoxGeometry(0.03, rIn * 1.9, nSpokes > 5 ? 0.038 : 0.07);
+  const nSpokes = spec.spokes || 10;
+  const spokeW = spec.spokeW ?? (nSpokes > 10 ? 0.038 : 0.07);
+  // eine Speiche geht von der Nabe nach aussen; breite Speichen werden aussen etwas schmaler
+  const spokeGeo = new THREE.CylinderGeometry(spokeW * 0.35, spokeW * 0.5, rIn * 0.96, 4, 1);
+  spokeGeo.rotateY(Math.PI / 4);
+  spokeGeo.scale(0.03 / (spokeW * 0.5), 1, 1);
+  spokeGeo.translate(0, rIn * 0.48, 0);
   const hubGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.04, 12);
   hubGeo.rotateZ(Math.PI / 2);
   const tireMat = new THREE.MeshStandardMaterial({ map: treadTexture(!!spec.offroadTires), roughness: 0.95 });
@@ -814,7 +891,7 @@ function makeCarMesh(spec) {
     const parts = [new THREE.Mesh(tireGeo, tireMat), new THREE.Mesh(barrelGeo, barrelMat), disc, lip];
     for (let k = 0; k < nSpokes; k++) {
       const sp = new THREE.Mesh(spokeGeo, rimMat);
-      sp.rotation.x = (k / nSpokes) * Math.PI;
+      sp.rotation.x = (k / nSpokes) * Math.PI * 2;
       sp.position.x = sx * (b.ww / 2 - 0.02);
       parts.push(sp);
     }
