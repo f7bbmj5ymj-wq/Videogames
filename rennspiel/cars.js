@@ -25,9 +25,10 @@ const CARS = [
     offroadTires: true,       // grobstollige Geländereifen
     desc: "Höhergelegter 911 mit Dachträger und Zusatzscheinwerfern. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.82, l: 4.53, h: 0.62, ride: 0.5, ch: 0.5, cl: 1.3, cz: -0.15, wr: 0.43, ww: 0.36, wb: 2.45,
-      humps: 0.13, flareF: 0.03, flareR: 0.075,   // 911: Kotflügel vorne höher als die Haube, breite "Hüften" hinten
-      extras: ["fastback", "rack", "lightbar", "cladding", "roundLights", "rallye", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
+    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.47, cl: 1.2, cz: -0.12, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.9,
+      nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
+      humps: 0.17, flareF: 0.035, flareR: 0.09,    // Kotflügel vorne höher als die Haube, breite "Hüften" hinten
+      extras: ["fastback", "flyline", "rack", "lightbar", "cladding", "roundLights", "rallye", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
     id: "impreza22b",
@@ -361,7 +362,7 @@ function makeCarMesh(spec) {
   const y0 = b.ride;                                   // Unterkante
   const y1 = Math.max(b.ride + b.h, 2 * b.wr + 0.16);  // Gürtellinie (Unterkante der Fenster)
   const top = y1;
-  const noseY = y0 + (y1 - y0) * 0.68;
+  const noseY = y0 + (y1 - y0) * (b.nose ?? 0.68);
   const ar = b.wr + 0.07;                              // Radius der Radläufe
   const cf = b.cz + b.cl / 2, cr = b.cz - b.cl / 2;    // Dach vorne / hinten
   const zf = Math.min(L - 0.7, cf + b.ch * (b.rake ?? 1.25)); // Fuss der Windschutzscheibe (rake = wie flach sie ist)
@@ -385,8 +386,9 @@ function makeCarMesh(spec) {
   s.bezierCurveTo(L, noseY + 0.1, L - (L - zf) * 0.45, y1, zf, y1);
   if (ex.has("fastback")) {
     // Motorhaube hinten (beim 911 sitzt der Motor im Heck) fällt bis zum Wagenende ab
-    s.lineTo(zr + 0.05, y1);
-    s.quadraticCurveTo(-L + 0.15, y1 - 0.06, -L, y1 - 0.28);
+    s.lineTo(zr, y1);
+    if (ex.has("flyline")) s.bezierCurveTo(zr - 0.3, y1 - 0.07, -L + 0.12, y1 - 0.14, -L, y1 - 0.26);
+    else s.quadraticCurveTo(-L + 0.15, y1 - 0.06, -L, y1 - 0.28);
   } else {
     s.lineTo(-L + 0.3, y1 + 0.01);
     s.quadraticCurveTo(-L, y1, -L, y1 - 0.2);
@@ -401,6 +403,11 @@ function makeCarMesh(spec) {
     const hit = ray.intersectObject(bodyMesh)[0];
     return hit ? hit.point.x : b.w / 2;
   };
+  const frontZ = (x, y) => {
+    ray.set(new THREE.Vector3(x, y, 10), new THREE.Vector3(0, 0, -1));
+    const hit = ray.intersectObject(bodyMesh)[0];
+    return hit ? hit.point.z : L;
+  };
 
   // --- Fahrgastzelle ---
   if (ex.has("convertible")) {
@@ -408,6 +415,54 @@ function makeCarMesh(spec) {
     ws.rotation.x = -0.45;
     box(b.w * 0.78, 0.1, 1.5, trim, 0, y1 - 0.02, b.cz - 0.45);               // Innenraum
     for (const x of [-0.38, 0.38]) box(0.45, 0.55, 0.12, trim, x * b.w * 0.6, y1 + 0.2, b.cz - 0.75); // Sitzlehnen
+  } else if (ex.has("flyline")) {
+    // Ein durchgehender Bogen von der Windschutzscheibe über das Dach bis zum Heck.
+    // Die Kabine ist in Wagenfarbe; Fenster und Scheiben liegen als Glas darauf.
+    const ch = b.ch, top = y1 + ch, apex = b.cz + b.cl * 0.2;
+    const V = (z, y) => new THREE.Vector2(z, y);
+    const front = new THREE.CubicBezierCurve(V(zf, y1), V(zf - (zf - apex) * 0.42, y1 + ch * 0.72), V(apex + (zf - apex) * 0.3, top), V(apex, top));
+    const back = new THREE.CubicBezierCurve(V(apex, top), V(apex - (apex - zr) * 0.4, top), V(zr + (apex - zr) * 0.32, y1 + ch * 0.33), V(zr, y1));
+    const cab = new THREE.Shape();
+    cab.moveTo(zr, y1 - 0.03);
+    cab.lineTo(zf, y1 - 0.03);
+    cab.lineTo(zf, y1);
+    for (const p of front.getPoints(24).slice(1)) cab.lineTo(p.x, p.y);
+    for (const p of back.getPoints(24).slice(1)) cab.lineTo(p.x, p.y);
+    cab.closePath();
+    const cabW = b.w * 0.86;
+    extrude(cab, cabW, paint, 0.06, true);
+    // Glasstreifen, der einem Stück der Kurve folgt (Windschutz- und Heckscheibe)
+    const glassAlong = (curve, t0, t1, width) => {
+      const pts = [], n = 16;
+      for (let i = 0; i <= n; i++) pts.push(curve.getPoint(t0 + (t1 - t0) * i / n));
+      const sh = new THREE.Shape();
+      const out = pts.map((p, i) => {
+        const q = pts[Math.min(n, i + 1)], o = pts[Math.max(0, i - 1)];
+        const dz = q.x - o.x, dy = q.y - o.y, l = Math.hypot(dz, dy) || 1;
+        return V(p.x - dy / l * 0.014, p.y + dz / l * 0.014);
+      });
+      sh.moveTo(pts[0].x, pts[0].y);
+      for (const p of pts.slice(1)) sh.lineTo(p.x, p.y);
+      for (const p of out.reverse()) sh.lineTo(p.x, p.y);
+      sh.closePath();
+      extrude(sh, width, glass, 0.01, true);
+    };
+    glassAlong(front, 0.0, 0.62, cabW * 0.86);    // Windschutzscheibe
+    glassAlong(back, 0.42, 0.94, cabW * 0.7);     // Heckscheibe
+    // Seitenfenster: etwas kleiner als die Kabine, aber breiter -> ragt seitlich als Glas heraus
+    const win = new THREE.Shape();
+    const wf = front.getPoint(0.12), wt1 = front.getPoint(0.8), wt2 = back.getPoint(0.3), wr2 = back.getPoint(0.78);
+    win.moveTo(wf.x - 0.12, y1 + 0.04);
+    win.lineTo(wt1.x - 0.08, wt1.y - 0.06);
+    win.quadraticCurveTo(apex, top - 0.05, wt2.x, wt2.y - 0.07);
+    win.quadraticCurveTo(wr2.x + 0.25, wr2.y + 0.02, wr2.x + 0.12, y1 + 0.05);
+    win.closePath();
+    extrude(win, cabW + 0.03, glass, 0.01, true);
+    // Säule zwischen Tür- und hinterem Seitenfenster (wie beim 911)
+    for (const sx of [-1, 1]) {
+      const bp = box(0.03, ch * 0.75, 0.07, paint, sx * (cabW / 2 + 0.006) * 0.95, y1 + ch * 0.38, b.cz - b.cl * 0.32);
+      bp.rotation.z = sx * 0.12;
+    }
   } else {
     const ch = b.ch;
     const g = new THREE.Shape();
@@ -467,20 +522,26 @@ function makeCarMesh(spec) {
   for (const sx of [-1, 1]) {
     if (ex.has("roundLights")) {
       // grosse, runde Scheinwerfer vorne in den Kotflügeln (beim 911 typisch "Froschaugen")
-      const hr = b.humps ? 0.17 : 0.15, tilt = b.humps ? 0.5 : 0.3;
-      const hy = noseY - 0.02 + (b.humps || 0) * 0.3, hx = sx * b.w * 0.33, hz = L - (b.humps ? 0.12 : 0.08);
+      const hr = b.humps ? 0.16 : 0.15, tilt = b.humps ? 0.55 : 0.3;
+      const hx = sx * b.w * 0.33, hy = noseY - 0.02 + (b.humps || 0) * 0.55;
+      const hz = frontZ(hx, hy) - 0.06;
       const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
       l.rotation.x = Math.PI / 2 - tilt;
       const ring = add(new THREE.TorusGeometry(hr + 0.005, 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
       ring.rotation.x = -tilt;
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
-      // (nur leicht schräg, sonst verschwindet das äussere Ende in der runden Ecke)
-      const hl = box(0.42, 0.14, 0.14, head, sx * b.w * 0.28, noseY - 0.1, FZ + 0.01);
-      hl.rotation.y = sx * 0.16;
-      box(0.46, 0.17, 0.08, trim, sx * b.w * 0.28, noseY - 0.1, FZ - 0.04).rotation.y = sx * 0.16;
+      // Hauptteil gerade nach vorne, aussen ein kurzes Eckstück, das der runden Ecke folgt.
+      // Ein Messstrahl findet die Oberfläche, damit nichts im Blech verschwindet.
+      const hy = noseY - 0.1, mx = sx * b.w * 0.31, ox = sx * b.w * 0.41;
+      box(0.34, 0.14, 0.12, head, mx, hy, frontZ(mx, hy) - 0.03);
+      box(0.38, 0.17, 0.06, trim, mx, hy, frontZ(mx, hy) - 0.07);
+      const cz = frontZ(ox, hy);
+      const corner = box(0.13, 0.14, 0.1, head, ox, hy, cz - 0.03);
+      corner.rotation.y = sx * 0.55;
       const blink = new THREE.MeshStandardMaterial({ color: 0xff9a1a, emissive: 0xff7a00, emissiveIntensity: 0.4 });
-      box(0.1, 0.06, 0.1, blink, sx * b.w * 0.41, noseY - 0.2, FZ - 0.02).rotation.y = sx * 0.4;
+      const bz = frontZ(ox, hy - 0.11);
+      box(0.12, 0.05, 0.08, blink, ox, hy - 0.11, bz - 0.02).rotation.y = sx * 0.55;
     } else {
       box(0.42, 0.1, 0.12, head, sx * b.w * 0.32, noseY - 0.12, FZ - 0.03);
     }
@@ -569,7 +630,7 @@ function makeCarMesh(spec) {
       plate.position.set(sx * (span / 2 + 0.008), wy + 0.01, wz);
     }
   };
-  if (ex.has("tallWing")) buildWing(0.34, 0.3, b.w * 0.9, accent, accent);   // 22B: hoch, in Wagenfarbe
+  if (ex.has("tallWing")) buildWing(0.2, 0.3, b.w * 0.9, accent, accent);    // 22B: in Wagenfarbe, nicht zu hoch
   else if (ex.has("wing")) buildWing(0.4, 0.38, b.w * 0.95, accent, trim);
   if (ex.has("rack")) {
     const ry = top + ch + 0.16;
