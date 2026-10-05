@@ -32,7 +32,7 @@ const CARS = [
                        // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
-      humps: 0.17, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
+      humps: 0.17, hoodDip: 0.07, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
       extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
@@ -356,6 +356,11 @@ function makeCarMesh(spec) {
         const topY = lerp(y1, noseY, smooth(zf, L, z));
         y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
           * smooth(topY - 0.3, topY - 0.02, y) * (y < y1 + 0.02 ? 1 : 0);
+        // Rinne in der Haubenmitte, in Fahrtrichtung von der Scheibe bis zur Nase
+        if (b.hoodDip) {
+          y -= b.hoodDip * (1 - smooth(0.05, 0.2, Math.abs(x) / b.w)) * smooth(zf - 0.1, zf + 0.35, z)
+            * smooth(topY - 0.12, topY - 0.01, y) * (y < y1 + 0.02 ? 1 : 0);
+        }
       }
       p.setXYZ(i, x, y, z);
     }
