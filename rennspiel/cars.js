@@ -322,6 +322,7 @@ function makeCarMesh(spec) {
   };
 
   const L = b.l / 2;
+  const FZ = L + 0.08, RZ = -L - 0.08; // echte Front- und Heckfläche (inkl. abgerundeter Kanten)
   const y0 = b.ride;                                   // Unterkante
   const y1 = Math.max(b.ride + b.h, 2 * b.wr + 0.16);  // Gürtellinie (Unterkante der Fenster)
   const top = y1;
@@ -403,20 +404,20 @@ function makeCarMesh(spec) {
   }
   if (ex.has("airDam")) {
     // grosser Frontspoiler mit Lufteinlass (Rallye-Look)
-    box(b.w * 0.6, 0.15, 0.06, trim, 0, y0 + 0.2, L + 0.06);
-    for (const sx of [-1, 1]) box(0.22, 0.1, 0.06, trim, sx * b.w * 0.36, y0 + 0.08, L + 0.05);
-    box(b.w * 0.42, 0.07, 0.05, trim, 0, y0 + 0.38, L + 0.04);          // kleiner Grill oben
+    box(b.w * 0.6, 0.15, 0.06, trim, 0, y0 + 0.2, FZ + 0.01);
+    for (const sx of [-1, 1]) box(0.22, 0.1, 0.06, trim, sx * b.w * 0.36, y0 + 0.08, FZ);
+    box(b.w * 0.42, 0.07, 0.05, trim, 0, y0 + 0.38, FZ);          // kleiner Grill oben
   } else if (b.humps) {
     // 911: kein Kühlergrill (Motor hinten), nur drei Lufteinlässe unten
-    box(b.w * 0.34, 0.09, 0.04, trim, 0, y0 + 0.17, L + 0.06);
-    for (const sx of [-1, 1]) box(b.w * 0.2, 0.08, 0.04, trim, sx * b.w * 0.33, y0 + 0.17, L + 0.04);
+    box(b.w * 0.34, 0.09, 0.04, trim, 0, y0 + 0.17, FZ);
+    for (const sx of [-1, 1]) box(b.w * 0.2, 0.08, 0.04, trim, sx * b.w * 0.33, y0 + 0.17, FZ - 0.01);
   } else {
-    box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, L + 0.07);         // Kühlergrill
+    box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, FZ);         // Kühlergrill
   }
   box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);          // Frontlippe
   box(b.w * 0.9, 0.1, 0.25, trim, 0, y0 + 0.06, -L + 0.1);            // Diffusor
-  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, L + 0.08);
-  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, -L - 0.08);
+  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
+  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, RZ - 0.01);
 
   // Scheinwerfer und Rücklichter
   for (const sx of [-1, 1]) {
@@ -430,17 +431,17 @@ function makeCarMesh(spec) {
       ring.rotation.x = -tilt;
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
-      const hl = box(0.46, 0.14, 0.1, head, sx * b.w * 0.31, noseY - 0.1, L - 0.01);
+      const hl = box(0.46, 0.14, 0.1, head, sx * b.w * 0.31, noseY - 0.1, FZ - 0.02);
       hl.rotation.y = sx * 0.28;
-      box(0.5, 0.17, 0.06, trim, sx * b.w * 0.31, noseY - 0.1, L - 0.06).rotation.y = sx * 0.28;
+      box(0.5, 0.17, 0.06, trim, sx * b.w * 0.31, noseY - 0.1, FZ - 0.07).rotation.y = sx * 0.28;
       const blink = new THREE.MeshStandardMaterial({ color: 0xff9a1a, emissive: 0xff7a00, emissiveIntensity: 0.4 });
-      box(0.12, 0.06, 0.08, blink, sx * b.w * 0.47, noseY - 0.2, L - 0.12).rotation.y = sx * 0.6;
+      box(0.12, 0.06, 0.08, blink, sx * b.w * 0.44, noseY - 0.2, FZ - 0.06).rotation.y = sx * 0.6;
     } else {
-      box(0.42, 0.1, 0.12, head, sx * b.w * 0.32, noseY - 0.12, L + 0.03);
+      box(0.42, 0.1, 0.12, head, sx * b.w * 0.32, noseY - 0.12, FZ - 0.03);
     }
   }
-  if (ex.has("fastback")) box(b.w * 0.86, 0.07, 0.1, tail, 0, y1 - 0.2, -L - 0.06);   // durchgehendes Leuchtband
-  else for (const sx of [-1, 1]) box(0.42, 0.11, 0.1, tail, sx * b.w * 0.32, y1 - 0.15, -L - 0.06);
+  if (ex.has("fastback")) box(b.w * 0.8, 0.07, 0.1, tail, 0, y1 - 0.2, RZ + 0.03);   // durchgehendes Leuchtband
+  else for (const sx of [-1, 1]) box(0.42, 0.11, 0.1, tail, sx * b.w * 0.32, y1 - 0.15, RZ + 0.03);
 
   // --- Zusatzteile ---
   const ch = ex.has("convertible") ? 0 : b.ch;
@@ -556,9 +557,9 @@ function makeCarMesh(spec) {
     }
   }
   if (ex.has("exhaust")) {
-    const ex1 = add(new THREE.CylinderGeometry(0.055, 0.06, 0.2, 18), chrome, b.w * 0.3, y0 + 0.12, -L - 0.04);
+    const ex1 = add(new THREE.CylinderGeometry(0.055, 0.06, 0.2, 18), chrome, b.w * 0.3, y0 + 0.12, RZ + 0.02);
     ex1.rotation.x = Math.PI / 2;
-    const ex2 = add(new THREE.CylinderGeometry(0.045, 0.045, 0.21, 18), seam, b.w * 0.3, y0 + 0.12, -L - 0.04);
+    const ex2 = add(new THREE.CylinderGeometry(0.045, 0.045, 0.21, 18), seam, b.w * 0.3, y0 + 0.12, RZ + 0.02);
     ex2.rotation.x = Math.PI / 2;
   }
   if (ex.has("badge22b")) {
@@ -571,13 +572,13 @@ function makeCarMesh(spec) {
     const t = new THREE.CanvasTexture(c);
     t.colorSpace = THREE.SRGBColorSpace;
     const badge = add(new THREE.PlaneGeometry(0.34, 0.085), new THREE.MeshStandardMaterial({ map: t, transparent: true, metalness: 0.6, roughness: 0.3 }),
-      -b.w * 0.25, y1 - 0.08, -L - 0.065);
+      -b.w * 0.25, y1 - 0.08, RZ - 0.01);
     badge.rotation.y = Math.PI;
     badge.castShadow = false;
   }
   if (ex.has("fogLights")) {
     for (const sx of [-1, 1]) {
-      const l = add(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 16), head, sx * b.w * 0.3, y0 + 0.2, L + 0.06);
+      const l = add(new THREE.CylinderGeometry(0.09, 0.09, 0.08, 16), head, sx * b.w * 0.3, y0 + 0.2, FZ);
       l.rotation.x = Math.PI / 2;
     }
   }
@@ -595,9 +596,9 @@ function makeCarMesh(spec) {
     box(b.w * 0.9, 0.32, 0.08, paint, 0, top + 0.16, -L + 0.06);
   }
   if (ex.has("bullbar")) {
-    box(b.w * 0.75, 0.07, 0.07, trim, 0, y0 + (y1 - y0) * 0.8, L + 0.2);
-    box(b.w * 0.75, 0.07, 0.07, trim, 0, y0 + 0.2, L + 0.2);
-    for (const sx of [-1, 1]) box(0.07, (y1 - y0) * 0.7, 0.07, trim, sx * b.w * 0.3, y0 + (y1 - y0) * 0.5, L + 0.2);
+    box(b.w * 0.75, 0.07, 0.07, trim, 0, y0 + (y1 - y0) * 0.8, FZ + 0.12);
+    box(b.w * 0.75, 0.07, 0.07, trim, 0, y0 + 0.2, FZ + 0.12);
+    for (const sx of [-1, 1]) box(0.07, (y1 - y0) * 0.7, 0.07, trim, sx * b.w * 0.3, y0 + (y1 - y0) * 0.5, FZ + 0.12);
   }
 
   // Tieferlegung: die ganze Karosserie sinkt, die Räder bleiben
