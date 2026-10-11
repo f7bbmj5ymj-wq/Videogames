@@ -28,7 +28,7 @@ const CARS = [
     desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
     body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.53, cl: 1.4, cz: -0.65, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
-      axleOff: 0.1, haunch: 0.08, rearEnd: 0.6,     // Kabine läuft weit nach hinten aus
+      axleOff: 0.1, haunch: 0.08, rearEnd: 0.35, rearFlat: 0.5,     // Kabine läuft weit nach hinten aus
                        // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
@@ -355,11 +355,11 @@ function makeCarMesh(spec) {
       if (b.humps) {
         // bis ganz nach vorne an die Nase; "oben" ist vorne tiefer, weil die Haube abfällt
         const topY = lerp(y1, noseY, smooth(zf, L, z));
-        y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
+        y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf + 0.15, zf + 0.6, z)
           * smooth(topY - 0.25, topY + 0.06, y) * (y < y1 + 0.14 ? 1 : 0);
         // Rinne in der Haubenmitte, in Fahrtrichtung von der Scheibe bis zur Nase
         if (b.hoodDip) {
-          y -= b.hoodDip * (1 - smooth(0.05, 0.2, Math.abs(x) / b.w)) * smooth(zf - 0.1, zf + 0.35, z)
+          y -= b.hoodDip * (1 - smooth(0.05, 0.2, Math.abs(x) / b.w)) * smooth(zf + 0.3, zf + 0.75, z)
             * smooth(topY - 0.06, topY + 0.06, y) * (y < y1 + 0.14 ? 1 : 0);
         }
       }
@@ -475,7 +475,7 @@ function makeCarMesh(spec) {
     const ch = b.ch, top = y1 + ch, apex = b.cz + b.cl * 0.2;
     const V = (z, y) => new THREE.Vector2(z, y);
     const front = new THREE.CubicBezierCurve(V(zf, y1), V(zf - (zf - apex) * 0.42, y1 + ch * 0.72), V(apex + (zf - apex) * 0.3, top), V(apex, top));
-    const back = new THREE.CubicBezierCurve(V(apex, top), V(apex - (apex - zr) * 0.4, top), V(zr + (apex - zr) * 0.32, y1 + ch * 0.33), V(zr, y1));
+    const back = new THREE.CubicBezierCurve(V(apex, top), V(apex - (apex - zr) * 0.4, top), V(zr + (apex - zr) * 0.25, y1 + ch * (b.rearFlat ?? 0.33)), V(zr, y1));
     const cab = new THREE.Shape();
     cab.moveTo(zr, y1 - 0.03);
     cab.lineTo(zf, y1 - 0.03);
