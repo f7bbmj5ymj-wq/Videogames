@@ -32,7 +32,7 @@ const CARS = [
                        // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
-      humps: 0.12, hoodDip: 0.05, noseRound: 0.24, flareF: 0.07, flareR: 0.09, flareLen: 0.55,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
+      humps: 0.12, hoodDip: 0.05, noseRound: 0.24, flareF: 0.07, flareR: 0.09, flareLen: 0.55, frontFlareBack: 0.25,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
       extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
@@ -343,7 +343,9 @@ function makeCarMesh(spec) {
       // Kotflügel über den Rädern nach aussen wölben
       const low = smooth(y1 + 0.04, y1 - 0.2, y);
       const fl = b.flareLen ?? 0.75;   // kürzer = Kotflügel stehen deutlicher als Beulen heraus
-      k += flareF * Math.exp(-(((z - zFA) / fl) ** 2)) * low;
+      // vorderer Kotflügel: nach vorne voll ausgestellt, hinter dem Rad läuft er schnell in die Karosserie aus
+      const flb = b.frontFlareBack ?? fl;
+      k += flareF * Math.exp(-(((z - zFA) / (z >= zFA ? fl : flb)) ** 2)) * low;
       k += flareR * Math.exp(-(((z - zRA) / fl) ** 2)) * low;
       x *= k;
       // 911: Hüften – über dem Hinterrad ist der Kotflügel höher (aussen am stärksten)
