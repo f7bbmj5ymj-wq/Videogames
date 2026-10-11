@@ -27,7 +27,7 @@ const CARS = [
     offroadTires: true,       // grobstollige Geländereifen
     desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
     top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.45, cl: 1.4, cz: -0.65, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
+    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.53, cl: 1.4, cz: -0.65, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
       axleOff: 0.1, haunch: 0.08, rearEnd: 0.6,     // Kabine läuft weit nach hinten aus
                        // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
