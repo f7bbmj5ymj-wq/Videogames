@@ -32,7 +32,7 @@ const CARS = [
                        // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
       nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
       slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
-      humps: 0.17, hoodDip: 0.07, flareF: 0.025, flareR: 0.055,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
+      humps: 0.12, hoodDip: 0.05, noseRound: 0.24, flareF: 0.07, flareR: 0.09, flareLen: 0.55,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
       extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
   },
   {
@@ -337,29 +337,30 @@ function makeCarMesh(spec) {
       let x = p.getX(i), y = p.getY(i);
       const z = p.getZ(i), az = Math.abs(z) / L;
       // Draufsicht: vorne und hinten abgerundete Ecken
-      let k = 1 - 0.14 * smooth(0.5, 1.03, az) ** 2;
+      let k = 1 - (z > 0 && b.noseRound ? b.noseRound : 0.14) * smooth(0.5, 1.03, az) ** 2;
       // Fensterbereich wird nach oben schmaler
       k *= 1 - Math.min(1.3, Math.max(0, (y - y1) / Math.max(b.ch, 0.1))) * 0.14;
       // Kotflügel über den Rädern nach aussen wölben
       const low = smooth(y1 + 0.04, y1 - 0.2, y);
-      k += flareF * Math.exp(-(((z - zFA) / 0.75) ** 2)) * low;
-      k += flareR * Math.exp(-(((z - zRA) / 0.75) ** 2)) * low;
+      const fl = b.flareLen ?? 0.75;   // kürzer = Kotflügel stehen deutlicher als Beulen heraus
+      k += flareF * Math.exp(-(((z - zFA) / fl) ** 2)) * low;
+      k += flareR * Math.exp(-(((z - zRA) / fl) ** 2)) * low;
       x *= k;
       // 911: Hüften – über dem Hinterrad ist der Kotflügel höher (aussen am stärksten)
       if (b.haunch) {
         y += b.haunch * smooth(0.22, 0.42, Math.abs(x) / b.w) * Math.exp(-(((z - zRA) / 0.95) ** 2))
-          * smooth(y1 - 0.4, y1 - 0.02, y) * (y < y1 + 0.02 ? 1 : 0);
+          * smooth(y1 - 0.35, y1 + 0.06, y) * (y < y1 + 0.14 ? 1 : 0);
       }
       // 911: vordere Kotflügel liegen höher als die Motorhaube
       if (b.humps) {
         // bis ganz nach vorne an die Nase; "oben" ist vorne tiefer, weil die Haube abfällt
         const topY = lerp(y1, noseY, smooth(zf, L, z));
         y += b.humps * smooth(0.14, 0.3, Math.abs(x) / b.w) * smooth(zf - 0.5, zf + 0.15, z)
-          * smooth(topY - 0.3, topY - 0.02, y) * (y < y1 + 0.02 ? 1 : 0);
+          * smooth(topY - 0.25, topY + 0.06, y) * (y < y1 + 0.14 ? 1 : 0);
         // Rinne in der Haubenmitte, in Fahrtrichtung von der Scheibe bis zur Nase
         if (b.hoodDip) {
           y -= b.hoodDip * (1 - smooth(0.05, 0.2, Math.abs(x) / b.w)) * smooth(zf - 0.1, zf + 0.35, z)
-            * smooth(topY - 0.12, topY - 0.01, y) * (y < y1 + 0.02 ? 1 : 0);
+            * smooth(topY - 0.06, topY + 0.06, y) * (y < y1 + 0.14 ? 1 : 0);
         }
       }
       p.setXYZ(i, x, y, z);
@@ -369,7 +370,7 @@ function makeCarMesh(spec) {
   const extrude = (shape, width, mat, bevel, shapeIt = false) => {
     const t = Math.min(bevel, width / 4);
     const geo = new THREE.ExtrudeGeometry(shape, {
-      depth: Math.max(0.01, width - 2 * t), bevelEnabled: t > 0, bevelThickness: t,
+      depth: Math.max(0.01, width - 2 * t), steps: shapeIt ? 28 : 1, bevelEnabled: t > 0, bevelThickness: t,
       bevelSize: t * 0.8, bevelSegments: 4, curveSegments: 16,
     });
     geo.translate(0, 0, -(width - 2 * t) / 2);
@@ -563,15 +564,30 @@ function makeCarMesh(spec) {
     for (const sx of [-1, 1]) box(0.24, 0.13, 0.05, trim, sx * b.w * 0.37, y0 + 0.12, FZ - 0.01);   // Gehäuse Nebelscheinwerfer
     box(b.w * 0.42, 0.07, 0.05, trim, 0, y0 + 0.38, FZ);          // kleiner Grill oben
   } else if (b.humps) {
-    // 911: kein Kühlergrill (Motor hinten), nur drei Lufteinlässe unten
-    box(b.w * 0.34, 0.09, 0.04, trim, 0, y0 + 0.17, FZ);
-    for (const sx of [-1, 1]) box(b.w * 0.2, 0.08, 0.04, trim, sx * b.w * 0.33, y0 + 0.17, FZ - 0.01);
+    // 911 (992): kein Kühlergrill, dafür ein breiter mittlerer Einlass und zwei
+    // seitliche Einlässe mit Lamellen; darunter ein silberner Unterfahrschutz.
+    // Alles wird per Messstrahl genau auf die runde Front gesetzt.
+    const iy = y0 + 0.15;
+    const onFront = (w, h, d, mat, x, y, yaw = 0) => {
+      const m = box(w, h, d, mat, x, y, frontZ(x, y) - d / 2 + 0.012);
+      m.rotation.y = yaw;
+      return m;
+    };
+    onFront(b.w * 0.3, 0.075, 0.05, seam, 0, iy + 0.01);                       // Mitte
+    for (const sx of [-1, 1]) {
+      const sxp = sx * b.w * 0.3;
+      onFront(b.w * 0.2, 0.12, 0.05, seam, sxp, iy, sx * 0.35);                 // Seite
+      for (let k = -1; k <= 1; k++) onFront(0.012, 0.1, 0.06, trim, sxp + k * 0.09 * Math.cos(0.35), iy, sx * 0.35);
+    }
+    const alu = new THREE.MeshStandardMaterial({ color: 0xa9adb1, metalness: 0.7, roughness: 0.35 });
+    const skid = box(b.w * 0.5, 0.03, 0.3, alu, 0, y0 + 0.02, FZ - 0.18);
+    skid.rotation.x = 0.35;
   } else {
     box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, FZ);         // Kühlergrill
   }
-  box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);          // Frontlippe
+  if (!b.humps) box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);   // Frontlippe
   box(b.w * 0.9, 0.1, 0.25, trim, 0, y0 + 0.06, -L + 0.1);            // Diffusor
-  box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
+  if (!ex.has("porscheBadge")) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
   if (!ex.has("porscheBadge")) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, RZ - 0.01); // Dakar: "911 Dakar"-Schild statt Nummernschild
 
   // Scheinwerfer und Rücklichter
@@ -581,10 +597,38 @@ function makeCarMesh(spec) {
       const hr = b.humps ? 0.135 : 0.15, tilt = b.humps ? 0.6 : 0.3;
       const hx = sx * b.w * 0.33, hy = noseY + (b.humps || 0) * 1.0 + (b.humps ? 0.05 : -0.02);
       const hz = frontZ(hx, hy) - (b.humps ? 0.1 : 0.06);
-      const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
-      l.rotation.x = Math.PI / 2 - tilt;
-      const ring = add(new THREE.TorusGeometry(hr + 0.005, b.humps ? 0.012 : 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
-      ring.rotation.x = -tilt;
+      if (b.humps) {
+        // 992-Scheinwerfer: flach eingelassen, helles Glas, leuchtende Mitte und 4 LED-Punkte
+        const fz = frontZ(hx, hy);
+        const lamp = new THREE.Group();
+        lamp.position.set(hx, hy, fz - 0.02);
+        lamp.rotation.x = -tilt;
+        group.add(lamp);
+        const disc = (r, mat, z) => {
+          const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, 0.02, 32), mat);
+          m.rotation.x = Math.PI / 2;
+          m.position.z = z;
+          m.scale.set(1.12, 1, 0.9);
+          lamp.add(m);
+          return m;
+        };
+        const lens = new THREE.MeshPhysicalMaterial({ color: 0xd9dee4, metalness: 0.6, roughness: 0.15, clearcoat: 1 });
+        disc(hr * 1.06, seam, 0.0);                       // dunkler Rand
+        disc(hr * 0.96, lens, 0.008);                      // Glas
+        disc(hr * 0.42, head, 0.016);                      // Hauptlicht
+        const dot = new THREE.CylinderGeometry(hr * 0.12, hr * 0.12, 0.02, 12);
+        for (const a of [0.785, 2.356, 3.927, 5.498]) {
+          const d = new THREE.Mesh(dot, head);
+          d.rotation.x = Math.PI / 2;
+          d.position.set(Math.cos(a) * hr * 0.7 * 1.12, Math.sin(a) * hr * 0.7 * 0.9, 0.017);
+          lamp.add(d);
+        }
+      } else {
+        const l = add(new THREE.CylinderGeometry(hr, hr, 0.24, 24), head, hx, hy, hz);
+        l.rotation.x = Math.PI / 2 - tilt;
+        const ring = add(new THREE.TorusGeometry(hr + 0.005, 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
+        ring.rotation.x = -tilt;
+      }
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
       // Hauptteil gerade nach vorne, aussen ein kurzes Eckstück, das der runden Ecke folgt.
@@ -623,6 +667,25 @@ function makeCarMesh(spec) {
       const sl = box(b.w * 0.54, 0.03, 0.022, trim, 0, gy + 0.02 - k * 0.011, gz + k * 0.05);
       sl.rotation.x = tilt;
     }
+  }
+  if (ex.has("porscheBadge")) {
+    // kleines Porsche-Wappen vorne in der Haubenmitte
+    const c = document.createElement("canvas");
+    c.width = 64; c.height = 80;
+    const g = c.getContext("2d");
+    g.fillStyle = "#c9a23a";
+    g.beginPath(); g.moveTo(4, 4); g.lineTo(60, 4); g.lineTo(60, 44); g.quadraticCurveTo(60, 70, 32, 78); g.quadraticCurveTo(4, 70, 4, 44); g.closePath(); g.fill();
+    g.fillStyle = "#111"; g.fillRect(10, 30, 20, 12); g.fillRect(34, 46, 20, 12);
+    g.fillStyle = "#b3122e"; g.fillRect(34, 30, 20, 12); g.fillRect(10, 46, 20, 12);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const cz = (zf + L) / 2 + 0.35;
+    ray.set(new THREE.Vector3(0, 5, cz), new THREE.Vector3(0, -1, 0));
+    const hit = ray.intersectObject(bodyMesh)[0];
+    const crest = add(new THREE.PlaneGeometry(0.07, 0.088), new THREE.MeshStandardMaterial({ map: t, transparent: true, metalness: 0.5, roughness: 0.3 }),
+      0, (hit ? hit.point.y : y1) + 0.006, cz);
+    crest.rotation.x = -Math.PI / 2 + 0.25;
+    crest.castShadow = false;
   }
   if (ex.has("towHooks")) {
     // rote Abschleppösen vorne und hinten
