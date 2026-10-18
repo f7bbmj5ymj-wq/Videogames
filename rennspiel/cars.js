@@ -440,12 +440,13 @@ function makeCarMesh(spec) {
           vec3 gold = vec3(0.55, 0.34, 0.12);
           vec3 red = vec3(0.6, 0.012, 0.025);
           vec3 col = d < 0.0 ? blue : d < 0.024 ? gold : d < 0.036 ? silver : d < 0.06 ? red : silver;
-          // Mittelstreifen oben über Haube, Dach und Heck: Blau in der Mitte, daneben Rot und Gold
-          float ax = abs(vCarPos.x);
-          if (d > 0.06 && vCarPos.y > ${f(y1 - 0.06)}) {
-            if (ax < 0.035) col = blue;
-            else if (ax < 0.06) col = red;
-            else if (ax > 0.075 && ax < 0.095) col = gold;
+          // Streifen über Haube, Dach und Heck – wie beim echten 911 Dakar seitlich versetzt:
+          // innen ein breiter blauer, dann ein roter und aussen ein schmaler goldener Streifen
+          float u = vCarPos.x - ${f(b.w * 0.1)};
+          if (d > 0.08) {   // überall oberhalb der Seitenlinie: Haube bis zur Nase, Dach und Heck
+            if (u > 0.0 && u < 0.11) col = blue;
+            else if (u > 0.125 && u < 0.17) col = red;
+            else if (u > 0.185 && u < 0.205) col = gold;
           }
           vec4 diffuseColor = vec4(col, opacity);`);
     };
@@ -670,6 +671,22 @@ function makeCarMesh(spec) {
       sl.rotation.x = tilt;
     }
   }
+  if (ex.has("livery953")) {
+    // weisses Nummernschild vorne
+    const c = document.createElement("canvas");
+    c.width = 256; c.height = 56;
+    const g = c.getContext("2d");
+    g.fillStyle = "#f4f4f4"; g.fillRect(0, 0, 256, 56);
+    g.fillStyle = "#2a4bb5"; g.fillRect(0, 0, 22, 56);
+    g.strokeStyle = "#111"; g.lineWidth = 3; g.strokeRect(1.5, 1.5, 253, 53);
+    g.fillStyle = "#111"; g.font = "700 38px system-ui, sans-serif"; g.textBaseline = "middle";
+    g.fillText("S·03911", 40, 30);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    const py = y0 + 0.27;
+    const pl = add(new THREE.PlaneGeometry(0.46, 0.1), new THREE.MeshStandardMaterial({ map: t, roughness: 0.4 }), 0, py, frontZ(0, py) + 0.03);
+    pl.castShadow = false;
+  }
   if (ex.has("porscheBadge")) {
     // kleines Porsche-Wappen vorne in der Haubenmitte
     const c = document.createElement("canvas");
@@ -782,12 +799,15 @@ function makeCarMesh(spec) {
     for (const sx of [-1, 1]) box(0.03, 0.06, depth, trim, sx * b.w * 0.4, ry + 0.07, b.cz);
     const front = box(b.w * 0.8, 0.07, 0.03, trim, 0, ry + 0.07, b.cz + depth / 2);
     front.rotation.x = -0.4;                                                    // Windabweiser
+    // LED-Leiste vorne am Dachträger (beim echten Dakar typisch)
+    const led = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff6e0, emissiveIntensity: 1.8 });
+    for (let k = -4; k <= 4; k++) box(0.1, 0.025, 0.02, led, k * b.w * 0.085, ry + 0.07, b.cz + depth / 2 + 0.03);
     // Benzinkanister (hellgrau) und Gepäcktasche (dunkelgrau)
     const can = new THREE.MeshStandardMaterial({ color: 0xbfc2c4, roughness: 0.5, metalness: 0.3 });
     box(0.26, 0.15, 0.15, can, b.w * 0.15, ry + 0.12, b.cz + depth * 0.28);
     box(0.05, 0.03, 0.1, seam, b.w * 0.15 + 0.08, ry + 0.21, b.cz + depth * 0.28);
     for (const x of [-0.07, 0, 0.07]) box(0.01, 0.12, 0.155, seam, b.w * 0.15 + x, ry + 0.12, b.cz + depth * 0.28);
-    const bag = new THREE.MeshStandardMaterial({ color: 0x55585b, roughness: 0.85 });
+    const bag = new THREE.MeshStandardMaterial({ color: 0x1c1d20, roughness: 0.85 });
     const duffel = add(new THREE.CapsuleGeometry(0.09, 0.26, 6, 12), bag, -b.w * 0.12, ry + 0.13, b.cz - depth * 0.1);
     duffel.rotation.z = Math.PI / 2;
   }
