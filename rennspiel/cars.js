@@ -21,16 +21,16 @@ const CARS = [
     kind: "Hypercar",
     color: 0xf3f3f1,          // weiss, mit Sichtcarbon-Teilen
     accent: 0x16181c,         // Carbon (Flügel, Splitter, Diffusor)
-    rim: 0x26282c,            // dunkle Felgen …
-    spokes: 10,               // … mit vielen feinen Speichen
-    caliper: 0xd0101e,        // rote Bremssättel
+    rim: 0x2a2c30,            // dunkle Carbon-Felgen …
+    spokes: 5, spokeW: 0.09,  // … mit 5 schlanken Speichen
+    caliper: 0x7ed321,        // grüne Bremssättel
     desc: "Schwedisches Hypercar mit 1600 PS: Mittelmotor, Kanzel-Cockpit und riesiger Heckflügel. Auf der Strasse das schnellste Auto im Spiel – im Gelände aber hilflos.",
     top: 100, accel: 16.5, grip: 8.8, off: 0.35,
     body: { w: 2.03, l: 4.61, h: 0.42, ride: 0.11, ch: 0.4, cl: 1.3, cz: 0.0, wr: 0.35, ww: 0.34, wb: 2.7, rake: 2.6,
       rearEnd: 1.25, rearFlat: 0.55,              // langes Heck hinter der Kabine (Mittelmotor)
       nose: 0.28, wedge: true, humps: 0.1, hoodDip: 0.04, noseRound: 0.3,     // sehr flache, runde Nase, erhöhte Kotflügel
       flareF: 0.05, flareR: 0.08, flareLen: 0.6, frontFlareBack: 0.3,
-      extras: ["fastback", "flyline", "splitter", "jeskoLights", "sideIntakes", "engineGrille", "bigWing", "centerExhaust"] },
+      extras: ["fastback", "flyline", "splitter", "jeskoLights", "jeskoStripe", "fenderVents", "sideIntakes", "engineGrille", "bigWing", "centerExhaust"] },
   },
   {
     id: "impreza22b",
@@ -418,6 +418,26 @@ function makeCarMesh(spec) {
   }
   s.closePath();
   let bodyMat = paint;
+  if (ex.has("jeskoStripe")) {
+    // grauer Mittelstreifen über Haube, Dach und Heck (mit hellem Rand), wie beim Jesko
+    bodyMat = paint.clone();
+    const f = (v) => v.toFixed(3);
+    bodyMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCarPos;")
+        .replace("#include <begin_vertex>", "#include <begin_vertex>\nvCarPos = position;");
+      sh.fragmentShader = sh.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying vec3 vCarPos;")
+        .replace("vec4 diffuseColor = vec4( diffuse, opacity );", `
+          vec3 col = diffuse;
+          float ax = abs(vCarPos.x);
+          bool roof = vCarPos.y > ${f(y1 + 0.04)} && vCarPos.z < ${f(zf)};
+          bool cowl = vCarPos.z >= ${f(zf - 0.05)} && vCarPos.z < ${f(zf + 0.42)} && vCarPos.y > ${f(y1 - 0.2)};
+          if ((roof || cowl) && ax < 0.36) col = vec3(0.45, 0.47, 0.49);
+          if (cowl && ((ax > 0.34 && ax < 0.375) || abs(vCarPos.z - ${f(zf + 0.42)}) < 0.02 && ax < 0.375)) col = vec3(0.35, 0.75, 0.08);
+          vec4 diffuseColor = vec4(col, opacity);`);
+    };
+  }
   if (ex.has("livery953")) {
     // Unten Dunkelblau, oben Silber, dazwischen ein goldener und ein roter Streifen.
     // Die Trennlinie steigt von vorne (niedrig) nach hinten leicht an.
@@ -458,14 +478,17 @@ function makeCarMesh(spec) {
     const hit = ray.intersectObject(bodyMesh)[0];
     return hit ? hit.point.x : b.w / 2;
   };
-  const onSurface = (w, h, mat, x, y, lift = 0.008) => {
+  const onSurface = (w, h, mat, x, y, lift = 0.008, spin = 0) => {
     ray.set(new THREE.Vector3(x, y, 10), new THREE.Vector3(0, 0, -1));
     const hit = ray.intersectObject(bodyMesh)[0];
     if (!hit) return null;
     const n = hit.face.normal.clone().transformDirection(bodyMesh.matrixWorld);
+    if (n.z < 0) n.negate();   // immer nach aussen (vorne) zeigen
+    mat.side = THREE.DoubleSide;
     const m = add(new THREE.PlaneGeometry(w, h), mat, 0, 0, 0);
     m.position.copy(hit.point).addScaledVector(n, lift);
     m.lookAt(m.position.clone().add(n));
+    if (spin) m.rotateZ(spin);
     m.castShadow = false;
     return m;
   };
@@ -598,7 +621,9 @@ function makeCarMesh(spec) {
     const alu = new THREE.MeshStandardMaterial({ color: 0xa9adb1, metalness: 0.7, roughness: 0.35 });
     if (ex.has("splitter")) {
       // breiter Carbon-Frontsplitter
-      box(b.w * 0.94, 0.025, 0.32, accent, 0, y0 - 0.02, FZ - 0.12);
+      box(b.w * 1.0, 0.03, 0.5, accent, 0, y0 - 0.02, FZ + 0.06);
+      const green = new THREE.MeshStandardMaterial({ color: 0x7ed321, roughness: 0.4 });
+      for (const x of [-0.42, -0.28, 0.28, 0.42]) box(0.025, 0.1, 0.3, green, x * b.w, y0 + 0.03, FZ + 0.15);
     } else {
       const skid = box(b.w * 0.5, 0.03, 0.3, alu, 0, y0 + 0.02, FZ - 0.18);
       skid.rotation.x = 0.35;
@@ -652,10 +677,10 @@ function makeCarMesh(spec) {
       }
     } else if (ex.has("jeskoLights")) {
       // schmale, schräg nach aussen laufende LED-Scheinwerfer, auf die runde Front gesetzt
-      const hy = noseY + 0.06;
-      onSurface(0.36, 0.1, seam, sx * b.w * 0.31, hy, 0.006);
-      onSurface(0.32, 0.035, head, sx * b.w * 0.31, hy + 0.015, 0.012);
-      onSurface(0.12, 0.025, head, sx * b.w * 0.31, hy - 0.03, 0.012);
+      const hy = noseY + (b.humps || 0) + 0.02, hx = sx * b.w * 0.29;   // innerhalb der runden Nase, sonst trifft der Messstrahl die Flanke
+      const ice = new THREE.MeshStandardMaterial({ color: 0xdffaff, emissive: 0xbff4ff, emissiveIntensity: 1.6 });
+      onSurface(0.34, 0.075, seam, hx, hy, 0.006, -sx * 0.45);
+      onSurface(0.3, 0.03, ice, hx, hy + 0.01, 0.012, -sx * 0.45);
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
       // Hauptteil gerade nach vorne, aussen ein kurzes Eckstück, das der runden Ecke folgt.
@@ -811,7 +836,19 @@ function makeCarMesh(spec) {
       plate.position.set(sx * (span / 2 + 0.008), wy + 0.01, wz);
     }
   };
-  if (ex.has("bigWing")) buildWing(0.46, 0.44, b.w * 0.98, accent, trim);   // Jesko: riesiger Carbon-Flügel
+  if (ex.has("bigWing")) buildWing(0.46, 0.44, b.w * 0.98, paint, seam);    // Jesko: riesiger Flügel auf schwarzen Stützen
+  if (ex.has("fenderVents")) {
+    // schwarze Lüftungsschlitze oben auf den vorderen Kotflügeln
+    for (const sx of [-1, 1]) {
+      const vx = sx * b.w * 0.34, vz = zf + 0.22;
+      ray.set(new THREE.Vector3(vx, 5, vz), new THREE.Vector3(0, -1, 0));
+      const hit = ray.intersectObject(bodyMesh)[0];
+      if (!hit) continue;
+      const vy = hit.point.y;
+      box(0.26, 0.02, 0.36, seam, vx, vy - 0.005, vz);
+      for (let k = -3; k <= 3; k++) box(0.24, 0.025, 0.012, trim, vx, vy + 0.005, vz + k * 0.045);
+    }
+  }
   if (ex.has("sideIntakes")) {
     // grosse Lufteinlässe vor den Hinterrädern (Kühlung für den Mittelmotor)
     const iz = zRA + ar + 0.38, iy = y0 + (y1 - y0) * 0.55;
