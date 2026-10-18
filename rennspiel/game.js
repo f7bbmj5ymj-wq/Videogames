@@ -2195,7 +2195,8 @@ function update(dt) {
     car.pitch = lerp(car.pitch, Math.atan2(hf - hb, 3.2), 1 - Math.exp(-12 * dt));
     car.roll = lerp(car.roll, Math.atan2(hl - hr, 2), 1 - Math.exp(-12 * dt));
   }
-  const lean = clamp(car.vS * 0.012 - car.steer * Math.abs(car.vF) * 0.0015, -0.08, 0.08);
+  // Wankneigung: in der Kurve lehnt sich die Karosserie nach AUSSEN (Fliehkraft), wie bei einem echten Auto
+  const lean = clamp(-car.vS * 0.01 + car.steer * Math.abs(car.vF) * 0.0012, -0.06, 0.06);
   playerMesh.group.position.set(car.x, car.y, car.z);
   playerMesh.group.rotation.set(-car.pitch, car.yaw, car.roll + lean, "YXZ");
   car.wheelSpin += car.vF * dt / playerMesh.radius;
@@ -2385,4 +2386,4 @@ function frame(now) {
 requestAnimationFrame(frame);
 
 // Für Tests in der Browser-Konsole
-window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam, openTuning, buyTuning, setQuality, get quality() { return quality; }, get carSpec() { return carSpec; } };
+window.game = { car, race, aiCars, save, roads, setMode, startRace, CARS, keys, update, cam, openTuning, buyTuning, setQuality, get quality() { return quality; }, get carSpec() { return carSpec; }, get playerMesh() { return playerMesh; } };
