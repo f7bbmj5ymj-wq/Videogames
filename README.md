@@ -37,6 +37,8 @@ Es nutzt [Three.js](https://threejs.org) mit physikalischem Himmel (`Sky.js`) so
 | M | Ton an/aus |
 | Esc | Pause und Statistik |
 
+**Controller** (Xbox, PlayStation u. a., per USB oder Bluetooth): linker Stick lenken, RT/R2 Gas, LT/L2 Bremse, X/Quadrat Handbremse, A/Kreuz bestätigen, B/Kreis zurück, LB/L1 Tuning, RB/R1 Garage, Y/Dreieck Kamera, Menü/Options Pause, View/Share zurück auf die Strasse.
+
 **Code**
 - `rennspiel/cars.js`: alle Autos (Fahrwerte und 3D-Modell). Hier kannst du neue Autos hinzufügen.
 - `rennspiel/game.js`: Welt, Fahrphysik, KI, Events, HUD. Die Datei ist in nummerierte Abschnitte gegliedert.

@@ -1131,13 +1131,15 @@ function stepCar(h, inp) {
 
   if (car.onGround) {
     if (inp.throttle) {
-      if (vF < -0.5) vF += 25 * h;
-      else if (vF < S.top) vF += S.accel * (1 - (vF / S.top) ** 2) * h;
+      const g = +inp.throttle; // 1 bei Tastatur, 0..1 beim Controller-Abzug
+      if (vF < -0.5) vF += 25 * g * h;
+      else if (vF < S.top) vF += S.accel * g * (1 - (vF / S.top) ** 2) * h;
     }
     if (vF > S.top) vF -= (vF - S.top) * 1.3 * h;
     if (inp.brake) {
-      if (vF > 0.5) vF -= 30 * h;
-      else if (vF > -14) vF -= 9 * h;
+      const g = +inp.brake;
+      if (vF > 0.5) vF -= 30 * g * h;
+      else if (vF > -14) vF -= 9 * g * h;
     }
     if (!inp.throttle && !inp.brake) vF -= Math.sign(vF) * Math.min(Math.abs(vF), (2 + Math.abs(vF) * 0.02) * h);
     if (inp.handbrake) vF -= Math.sign(vF) * Math.min(Math.abs(vF), 7 * h);
@@ -2111,14 +2113,57 @@ function nearRaceStart() {
   return Math.hypot(car.x - raceMarkerPos.x, car.z - raceMarkerPos.z) < 12;
 }
 
+// ---------- Controller (Xbox, PlayStation, …) über die Gamepad-API ----------
+// Analog: linker Stick lenkt, rechter Abzug (RT/R2) gibt Gas, linker (LT/L2) bremst.
+// Knöpfe werden in Tastendrücke übersetzt, damit alle Menüs auch mit dem Controller gehen.
+const PAD_BUTTONS = {
+  0: "Enter",      // A / Kreuz: bestätigen, Rennen starten
+  1: "Escape",     // B / Kreis: zurück
+  2: "Space",      // X / Quadrat: Handbremse
+  3: "KeyC",       // Y / Dreieck: Kamera
+  4: "KeyT",       // LB / L1: Tuning
+  5: "KeyG",       // RB / R1: Garage
+  8: "KeyR",       // View / Share: zurück auf die Strasse
+  9: "Escape",     // Menü / Options: Pause
+  12: "ArrowUp", 13: "ArrowDown", 14: "ArrowLeft", 15: "ArrowRight",
+};
+const pad = { connected: false, prev: {}, steer: 0, gas: 0, brake: 0 };
+addEventListener("gamepadconnected", (e) => notify(`🎮 Controller verbunden: ${e.gamepad.id.split("(")[0].trim()}`, "gold"));
+addEventListener("gamepaddisconnected", () => notify("🎮 Controller getrennt", "red"));
+function pollGamepad() {
+  const gp = [...(navigator.getGamepads ? navigator.getGamepads() : [])].find((g) => g && g.connected);
+  pad.connected = !!gp;
+  if (!gp) { pad.steer = pad.gas = pad.brake = 0; return; }
+  const dz = (v) => (Math.abs(v) < 0.15 ? 0 : (v - Math.sign(v) * 0.15) / 0.85);
+  pad.steer = -dz(gp.axes[0] || 0);
+  pad.gas = gp.buttons[7] ? gp.buttons[7].value : 0;
+  pad.brake = gp.buttons[6] ? gp.buttons[6].value : 0;
+  for (const [i, code] of Object.entries(PAD_BUTTONS)) {
+    const down = !!(gp.buttons[i] && gp.buttons[i].pressed);
+    if (down !== !!pad.prev[i]) {
+      initAudio();
+      dispatchEvent(new KeyboardEvent(down ? "keydown" : "keyup", { code }));
+      pad.prev[i] = down;
+    }
+  }
+  // Stick hoch/runter blättert in Garage und Werkstatt
+  if (mode === "garage" || mode === "tuning") {
+    const y = gp.axes[1] || 0, dir = y < -0.6 ? "ArrowUp" : y > 0.6 ? "ArrowDown" : null;
+    if (dir && dir !== pad.prevStick) dispatchEvent(new KeyboardEvent("keydown", { code: dir }));
+    if (pad.prevStick && pad.prevStick !== dir) dispatchEvent(new KeyboardEvent("keyup", { code: pad.prevStick }));
+    pad.prevStick = dir;
+  }
+}
+
 function readInput() {
   const locked = mode !== "drive" || race.state === "countdown";
   if (locked) return { throttle: false, brake: false, handbrake: mode !== "drive", steer: 0 };
+  const kSteer = (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0);
   return {
-    throttle: !!(keys.KeyW || keys.ArrowUp),
-    brake: !!(keys.KeyS || keys.ArrowDown),
+    throttle: keys.KeyW || keys.ArrowUp ? 1 : pad.gas > 0.05 ? pad.gas : 0,
+    brake: keys.KeyS || keys.ArrowDown ? 1 : pad.brake > 0.05 ? pad.brake : 0,
     handbrake: !!keys.Space,
-    steer: (keys.KeyA || keys.ArrowLeft ? 1 : 0) - (keys.KeyD || keys.ArrowRight ? 1 : 0),
+    steer: kSteer || pad.steer,
   };
 }
 
@@ -2330,6 +2375,7 @@ function frame(now) {
   const raw = (now - last) / 1000;
   const dt = clamp(raw, 0, 0.05); // nie negativ (erstes Bild!) und nie zu gross
   last = now;
+  pollGamepad();
   if (mode !== "pause" && mode !== "results") update(dt);
   else updateAudio(1000, 0, 0, false);
   renderFrame(dt);
