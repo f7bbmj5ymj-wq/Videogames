@@ -9,7 +9,7 @@ Es nutzt [Three.js](https://threejs.org) mit physikalischem Himmel (`Sky.js`) so
 
 **Inhalt**
 - Offene Welt mit Bergsee, Alpwiesen, Wäldern, Chalets, Kühen und verschneiten Gipfeln (inkl. Matterhorn)
-- 12 Autos in der Garage (Taste **G**), u. a. **Porsche 911 Dakar**, **Subaru Impreza 22B STi**, Supersportwagen, Muscle-Car, Rallyeauto, Pick-up, Oldtimer
+- 12 Autos in der Garage (Taste **G**), u. a. **Koenigsegg Jesko**, **Subaru Impreza 22B STi**, Supersportwagen, Muscle-Car, Rallyeauto, Pick-up, Oldtimer
 - Tuning-Werkstatt (Taste **T**): Motor, Turbo, Reifen, Fahrwerk, Leichtbau, Heckflügel, Tieferlegung, Lackierung
 - Realistische Grafik: Gras im Wind, Höhennebel, Bloom, Farbabstimmung, Linsenreflex; drei Qualitätsstufen (Taste **Q**), bei Ruckeln automatisch niedriger
 - Leistungsklassen D bis S2, unterschiedliche Fahrwerte für Asphalt und Gelände

@@ -61,7 +61,7 @@ function loadSave() {
   try { return JSON.parse(localStorage.getItem("alpenfestival") || "{}"); } catch { return {}; }
 }
 const save = Object.assign(
-  { credits: 0, skillPoints: 0, wins: 0, races: 0, bestRace: null, traps: {}, bestDrift: 0, car: "dakar", tuning: {}, bonus: false },
+  { credits: 0, skillPoints: 0, wins: 0, races: 0, bestRace: null, traps: {}, bestDrift: 0, car: "jesko", tuning: {}, bonus: false },
   loadSave()
 );
 function storeSave() {

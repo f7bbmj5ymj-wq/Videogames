@@ -16,24 +16,21 @@
 
 const CARS = [
   {
-    id: "dakar",
-    name: "Porsche 911 Dakar",
-    kind: "Gelände-Sportwagen",
-    color: 0xd4d6d8,          // silber (oben); unten blau, siehe "livery953"
-    accent: 0x13235f,
-    rim: 0xeeeeec,            // weisse Felgen …
-    spoilerColor: 0xf4f4f2,   // weisser Heckspoiler
-    spokes: 5, spokeW: 0.17,  // … mit 5 breiten Speichen
-    offroadTires: true,       // grobstollige Geländereifen
-    desc: "Höhergelegter 911 im Roughroad's-Rallye-Design mit Startnummer 953 und Dachträger. Schnell auf der Strasse – und abseits davon unschlagbar.",
-    top: 67, accel: 12.5, grip: 7, off: 0.95,
-    body: { w: 1.8, l: 4.53, h: 0.5, ride: 0.26, ch: 0.53, cl: 1.4, cz: -0.65, wr: 0.36, ww: 0.3, wb: 2.45, rake: 1.5,
-      axleOff: 0.1, haunch: 0.08, rearEnd: 0.35, rearFlat: 0.5,     // Kabine läuft weit nach hinten aus
-                       // Räder weiter vorne (Motor hinten), hohe Hüften über dem Hinterrad
-      nose: 0.4,                                   // niedrige Nase, lange abfallende Haube
-      slimTrim: true,                              // nur schmale schwarze Radlauf-Kanten
-      humps: 0.12, hoodDip: 0.05, noseRound: 0.24, flareF: 0.07, flareR: 0.09, flareLen: 0.55, frontFlareBack: 0.25,   // Kotflügel vorne deutlich höher: tiefe Mulde zwischen den Scheinwerfern
-      extras: ["fastback", "flyline", "rackPlatform", "cladding", "roundLights", "livery953", "ducktail", "engineGrille", "towHooks", "porscheBadge"] },
+    id: "jesko",
+    name: "Koenigsegg Jesko",
+    kind: "Hypercar",
+    color: 0xf3f3f1,          // weiss, mit Sichtcarbon-Teilen
+    accent: 0x16181c,         // Carbon (Flügel, Splitter, Diffusor)
+    rim: 0x26282c,            // dunkle Felgen …
+    spokes: 10,               // … mit vielen feinen Speichen
+    caliper: 0xd0101e,        // rote Bremssättel
+    desc: "Schwedisches Hypercar mit 1600 PS: Mittelmotor, Kanzel-Cockpit und riesiger Heckflügel. Auf der Strasse das schnellste Auto im Spiel – im Gelände aber hilflos.",
+    top: 100, accel: 16.5, grip: 8.8, off: 0.35,
+    body: { w: 2.03, l: 4.61, h: 0.42, ride: 0.11, ch: 0.4, cl: 1.3, cz: 0.0, wr: 0.35, ww: 0.34, wb: 2.7, rake: 2.6,
+      rearEnd: 1.25, rearFlat: 0.55,              // langes Heck hinter der Kabine (Mittelmotor)
+      nose: 0.28, wedge: true, humps: 0.1, hoodDip: 0.04, noseRound: 0.3,     // sehr flache, runde Nase, erhöhte Kotflügel
+      flareF: 0.05, flareR: 0.08, flareLen: 0.6, frontFlareBack: 0.3,
+      extras: ["fastback", "flyline", "splitter", "jeskoLights", "sideIntakes", "engineGrille", "bigWing", "centerExhaust"] },
   },
   {
     id: "impreza22b",
@@ -408,7 +405,8 @@ function makeCarMesh(spec) {
   s.lineTo(L, noseY - 0.12);
   // Nase + Motorhaube als EINE Kurve: beginnt senkrecht an der Front und läuft
   // flach in die Windschutzscheibe aus – so gibt es keinen Knick.
-  s.bezierCurveTo(L, noseY + 0.1, L - (L - zf) * 0.45, y1, zf, y1);
+  if (b.wedge) s.bezierCurveTo(L - 0.12, noseY + 0.05, L - (L - zf) * 0.55, y1 - 0.03, zf, y1);   // flacher Keil (Hypercar)
+  else s.bezierCurveTo(L, noseY + 0.1, L - (L - zf) * 0.45, y1, zf, y1);
   if (ex.has("fastback")) {
     // Motorhaube hinten (beim 911 sitzt der Motor im Heck) fällt bis zum Wagenende ab
     s.lineTo(zr, y1);
@@ -459,6 +457,17 @@ function makeCarMesh(spec) {
     ray.set(new THREE.Vector3(5, y, z), new THREE.Vector3(-1, 0, 0));
     const hit = ray.intersectObject(bodyMesh)[0];
     return hit ? hit.point.x : b.w / 2;
+  };
+  const onSurface = (w, h, mat, x, y, lift = 0.008) => {
+    ray.set(new THREE.Vector3(x, y, 10), new THREE.Vector3(0, 0, -1));
+    const hit = ray.intersectObject(bodyMesh)[0];
+    if (!hit) return null;
+    const n = hit.face.normal.clone().transformDirection(bodyMesh.matrixWorld);
+    const m = add(new THREE.PlaneGeometry(w, h), mat, 0, 0, 0);
+    m.position.copy(hit.point).addScaledVector(n, lift);
+    m.lookAt(m.position.clone().add(n));
+    m.castShadow = false;
+    return m;
   };
   const frontZ = (x, y) => {
     ray.set(new THREE.Vector3(x, y, 10), new THREE.Vector3(0, 0, -1));
@@ -576,21 +585,30 @@ function makeCarMesh(spec) {
       m.rotation.y = yaw;
       return m;
     };
-    onFront(b.w * 0.3, 0.075, 0.05, seam, 0, iy + 0.01);                       // Mitte
-    for (const sx of [-1, 1]) {
+    if (ex.has("splitter")) {
+      onSurface(b.w * 0.5, 0.16, seam, 0, y0 + 0.12);                           // Jesko: grosser Einlass über dem Splitter
+      for (const sx of [-1, 1]) onSurface(b.w * 0.16, 0.12, seam, sx * b.w * 0.37, y0 + 0.1);
+    }
+    else onFront(b.w * 0.3, 0.075, 0.05, seam, 0, iy + 0.01);                  // Mitte
+    if (!ex.has("splitter")) for (const sx of [-1, 1]) {
       const sxp = sx * b.w * 0.3;
       onFront(b.w * 0.2, 0.12, 0.05, seam, sxp, iy, sx * 0.35);                 // Seite
       for (let k = -1; k <= 1; k++) onFront(0.012, 0.1, 0.06, trim, sxp + k * 0.09 * Math.cos(0.35), iy, sx * 0.35);
     }
     const alu = new THREE.MeshStandardMaterial({ color: 0xa9adb1, metalness: 0.7, roughness: 0.35 });
-    const skid = box(b.w * 0.5, 0.03, 0.3, alu, 0, y0 + 0.02, FZ - 0.18);
-    skid.rotation.x = 0.35;
+    if (ex.has("splitter")) {
+      // breiter Carbon-Frontsplitter
+      box(b.w * 0.94, 0.025, 0.32, accent, 0, y0 - 0.02, FZ - 0.12);
+    } else {
+      const skid = box(b.w * 0.5, 0.03, 0.3, alu, 0, y0 + 0.02, FZ - 0.18);
+      skid.rotation.x = 0.35;
+    }
   } else {
     box(b.w * 0.5, 0.16, 0.04, trim, 0, y0 + 0.28, FZ);         // Kühlergrill
   }
   if (!b.humps) box(b.w * 0.96, 0.09, 0.25, trim, 0, y0 + 0.05, L - 0.08);   // Frontlippe
   box(b.w * 0.9, 0.1, 0.25, trim, 0, y0 + 0.06, -L + 0.1);            // Diffusor
-  if (!ex.has("porscheBadge")) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
+  if (!ex.has("porscheBadge") && !b.wedge) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.4, FZ + 0.01);
   if (!ex.has("porscheBadge")) box(0.52, 0.12, 0.02, plate, 0, y0 + 0.42, RZ - 0.01); // Dakar: "911 Dakar"-Schild statt Nummernschild
 
   // Scheinwerfer und Rücklichter
@@ -632,6 +650,12 @@ function makeCarMesh(spec) {
         const ring = add(new THREE.TorusGeometry(hr + 0.005, 0.025, 8, 28), chrome, hx, hy + 0.12 * Math.sin(tilt), hz + 0.12 * Math.cos(tilt));
         ring.rotation.x = -tilt;
       }
+    } else if (ex.has("jeskoLights")) {
+      // schmale, schräg nach aussen laufende LED-Scheinwerfer, auf die runde Front gesetzt
+      const hy = noseY + 0.06;
+      onSurface(0.36, 0.1, seam, sx * b.w * 0.31, hy, 0.006);
+      onSurface(0.32, 0.035, head, sx * b.w * 0.31, hy + 0.015, 0.012);
+      onSurface(0.12, 0.025, head, sx * b.w * 0.31, hy - 0.03, 0.012);
     } else if (ex.has("rectLights")) {
       // eckige Scheinwerfer, die um die Ecke laufen, mit orangem Blinker
       // Hauptteil gerade nach vorne, aussen ein kurzes Eckstück, das der runden Ecke folgt.
@@ -787,6 +811,23 @@ function makeCarMesh(spec) {
       plate.position.set(sx * (span / 2 + 0.008), wy + 0.01, wz);
     }
   };
+  if (ex.has("bigWing")) buildWing(0.46, 0.44, b.w * 0.98, accent, trim);   // Jesko: riesiger Carbon-Flügel
+  if (ex.has("sideIntakes")) {
+    // grosse Lufteinlässe vor den Hinterrädern (Kühlung für den Mittelmotor)
+    const iz = zRA + ar + 0.38, iy = y0 + (y1 - y0) * 0.55;
+    for (const sx of [-1, 1]) {
+      const x = sideX(iy, iz);
+      box(0.06, (y1 - y0) * 0.42, 0.5, seam, sx * (x - 0.012), iy, iz);
+      box(0.02, 0.02, 0.5, trim, sx * (x + 0.005), iy + (y1 - y0) * 0.29, iz);
+    }
+  }
+  if (ex.has("centerExhaust")) {
+    const tip = add(new THREE.CylinderGeometry(0.075, 0.075, 0.16, 24), chrome, 0, y1 - 0.42, RZ + 0.02);
+    tip.rotation.x = Math.PI / 2;
+    const hole = add(new THREE.CylinderGeometry(0.06, 0.06, 0.165, 24), seam, 0, y1 - 0.42, RZ + 0.02);
+    hole.rotation.x = Math.PI / 2;
+    box(b.w * 0.8, 0.14, 0.3, accent, 0, y0 + 0.06, RZ + 0.14);   // Carbon-Diffusor
+  }
   if (ex.has("tallWing")) buildWing(0.2, 0.3, b.w * 0.9, accent, accent);    // 22B: in Wagenfarbe, nicht zu hoch
   else if (ex.has("wing")) buildWing(0.4, 0.38, b.w * 0.95, accent, trim);
   if (ex.has("rackPlatform")) {
